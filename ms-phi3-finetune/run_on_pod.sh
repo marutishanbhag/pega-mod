@@ -113,12 +113,14 @@ python "$SCRIPTS_DIR/merge_adapters.py" \
 
 log "  Merged model size: $(du -sh "$MERGED_DIR" | cut -f1)"
 
-# ── Step 6: Start vLLM server ──────────────────────────────────────────────────
+# ── Step 6: Start vLLM + Open WebUI ───────────────────────────────────────────
 log ""
-log "[6/6] Starting vLLM server on port 8000..."
-log "  API endpoint: http://0.0.0.0:8000/v1"
-log "  Test with: curl http://0.0.0.0:8000/v1/models"
+log "[6/6] Starting vLLM API + Open WebUI chat interface..."
+log "  API     : http://0.0.0.0:8000/v1"
+log "  Chat UI : http://0.0.0.0:3000"
 log "  Press Ctrl+C to stop."
 log ""
+log "  NOTE: Make sure ports 8000 and 3000 are both exposed in RunPod pod settings."
+log ""
 
-bash "$SCRIPTS_DIR/runpod_setup.sh" "$MERGED_DIR" 8000
+bash "$SCRIPTS_DIR/runpod_setup.sh" "$MERGED_DIR" 8000 3000
