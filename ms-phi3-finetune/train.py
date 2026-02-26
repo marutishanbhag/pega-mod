@@ -108,7 +108,7 @@ def main():
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         attn_implementation="eager",  # flash_attention_2 optional if installed
     )
     model.config.use_cache = False  # required for gradient checkpointing
@@ -165,7 +165,7 @@ def main():
         optim="paged_adamw_8bit",
         logging_steps=10,
         save_steps=100,
-        eval_strategy="steps",
+        evaluation_strategy="steps",
         eval_steps=100,
         save_total_limit=3,
         load_best_model_at_end=False,
@@ -194,7 +194,7 @@ def main():
     adapter_path = os.path.join(args.output_dir, "final_adapter")
     print(f"\nSaving LoRA adapters to {adapter_path} ...")
     trainer.model.save_pretrained(adapter_path)
-    tokenizer.save_pretrained(adapter_path)
+    trainer.processing_class.save_pretrained(adapter_path)
 
     print("\nTraining complete.")
     print(f"  Adapters saved to: {adapter_path}")
