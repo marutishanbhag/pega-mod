@@ -19,9 +19,8 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
 )
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 
@@ -150,14 +149,13 @@ def main():
     print(f"Train examples: {len(train_dataset)}")
     print(f"Eval examples:  {len(eval_dataset)}")
 
-    # ── Training arguments ─────────────────────────────────────────────────────
-    training_args = TrainingArguments(
+    # ── SFTConfig (replaces TrainingArguments in trl 0.29+) ────────────────────
+    training_args = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
         per_device_eval_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        # Effective batch size = 2 * 8 = 16
         learning_rate=args.learning_rate,
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
@@ -171,9 +169,12 @@ def main():
         eval_steps=100,
         save_total_limit=3,
         load_best_model_at_end=False,
-        report_to="none",  # set to "wandb" if you want W&B logging
+        report_to="none",
         dataloader_num_workers=2,
         remove_unused_columns=False,
+        dataset_text_field="text",
+        max_seq_length=args.max_seq_length,
+        packing=False,
     )
 
     # ── SFTTrainer ─────────────────────────────────────────────────────────────
@@ -183,9 +184,6 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         args=training_args,
-        dataset_text_field="text",
-        max_seq_length=args.max_seq_length,
-        packing=False,
     )
 
     # ── Train ──────────────────────────────────────────────────────────────────
