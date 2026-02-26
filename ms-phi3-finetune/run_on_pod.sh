@@ -30,20 +30,24 @@ echo "  Pega Phi-3 Full Training Pipeline"
 echo "  PyTorch 2.4 / CUDA 12.4 / RTX 4090"
 echo "=============================================="
 
-# ── Step 1: Install dependencies ──────────────────────────────────────────────
+# ── Step 1: Install dependencies to /workspace (container disk is small) ──────
 echo ""
-echo "[1/5] Installing Python dependencies..."
-pip install --quiet \
-    transformers>=4.43.0 \
-    peft>=0.12.0 \
-    bitsandbytes>=0.43.0 \
-    trl>=0.9.6 \
-    datasets>=2.20.0 \
-    accelerate>=0.31.0 \
+echo "[1/5] Installing Python dependencies to /workspace/pip_packages..."
+export PIP_TARGET=/workspace/pip_packages
+export PYTHONPATH=/workspace/pip_packages:$PYTHONPATH
+mkdir -p /workspace/pip_packages
+
+pip install --target=/workspace/pip_packages \
+    "transformers>=4.43.0" \
+    "peft>=0.12.0" \
+    "bitsandbytes>=0.43.0" \
+    "trl>=0.9.6" \
+    "datasets>=2.20.0" \
+    "accelerate>=0.31.0" \
     scipy \
     vllm
 
-echo "  Dependencies installed."
+echo "  Dependencies installed to /workspace/pip_packages"
 
 # ── Step 2: Download scripts from GitHub ──────────────────────────────────────
 echo ""
@@ -85,7 +89,11 @@ echo "  This takes ~1-2 hours on RTX 4090. Watch the loss decrease in the logs."
 echo ""
 mkdir -p "$OUTPUT_DIR"
 
-HF_HOME="$WORKSPACE/.cache/huggingface" \
+# Ensure workspace packages are on path for all subsequent steps
+export PIP_TARGET=/workspace/pip_packages
+export PYTHONPATH=/workspace/pip_packages:$PYTHONPATH
+export HF_HOME="$WORKSPACE/.cache/huggingface"
+
 python "$SCRIPTS_DIR/train.py" \
     --data_dir "$DATA_DIR" \
     --output_dir "$OUTPUT_DIR"
