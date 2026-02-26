@@ -165,7 +165,7 @@ def main():
         optim="paged_adamw_8bit",
         logging_steps=10,
         save_steps=100,
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         eval_steps=100,
         save_total_limit=3,
         load_best_model_at_end=False,
@@ -173,7 +173,7 @@ def main():
         dataloader_num_workers=2,
         remove_unused_columns=False,
         dataset_text_field="text",
-        max_seq_length=args.max_seq_length,
+        max_length=args.max_seq_length,
         packing=False,
     )
 
