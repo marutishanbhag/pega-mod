@@ -1,0 +1,58 @@
+package com.pegarules.generated.decisiontable;
+
+import com.pega.platform.coreassemblers.decision.AbstractDecisionTable;
+import java.util.List;
+import com.pega.pegarules.priv.util.ExceptionDescriptor;
+import java.util.Arrays;
+import java.util.Collections;
+import com.pega.ibm.icu.math.BigDecimal;
+import com.pega.pegarules.priv.PegaAPI;
+import com.pega.pegarules.priv.EvaluateFunction;
+import com.pega.pegarules.priv.FUAUtil;
+import com.pega.pegarules.priv.FUAUtil.C2VOp;
+import com.pega.pegarules.priv.tracer.RuleTraceInfo;
+import com.pega.pegarules.pub.clipboard.ClipboardPage;
+import com.pega.pegarules.pub.clipboard.ClipboardProperty;
+import com.pega.pegarules.pub.context.PRStackFrame;
+import com.pega.pegarules.pub.dictionary.ImmutablePropertyInfo;
+import com.pega.pegarules.pub.dictionary.PropertyInfo;
+import com.pega.pegarules.pub.runtime.ParameterPage;
+import com.pega.pegarules.pub.runtime.PublicAPI;
+import com.pega.platform.coreassemblers.when.AbstractWhen;
+import com.pega.platform.executionengine.intrinsic.PageListUtility;
+import com.pega.platform.executionengine.runtime.Aspect;
+import com.pega.platform.executionengine.runtime.Loadtime;
+import com.pega.platform.executionengine.runtime.RuleDispatcher;
+import com.pega.platform.executionengine.runtime.RuleDispatcher.StackBehavior;
+import com.pega.platform.executionengine.runtime.RuleHandle;
+import com.pega.platform.executionengine.runtime.RuleHandleFactory;
+import com.pega.platform.executionengine.runtime.Runtime;
+import com.pega.pegarules.pub.clipboard.PRStringFormat;
+import java.util.Date;
+import com.pega.pegarules.pub.util.*;
+import com.pega.platform.clipboard.query.ScalarValueQuery;
+import com.pega.platform.clipboard.query.QueryBuilderFactory;
+
+public class ra_decision__baseclass_pytaggeddatainstances_2130661864 extends AbstractDecisionTable {
+
+    private final ScalarValueQuery scalarValueQuery_1;
+
+    private static final RuleTraceInfo ruleTracer = new RuleTraceInfo("RULE-DECLARE-DECISIONTABLE @BASECLASS PYTAGGEDDATAINSTANCES #20180713T135044.470 GMT", "@baseclass pyTaggedDataInstances", "Pega-Desktop", "08-01-01", "20180713T135044.470 GMT");
+
+    public ra_decision__baseclass_pytaggeddatainstances_2130661864(final Loadtime loadtime) {
+        super(ruleTracer);
+        final QueryBuilderFactory queryBuilderFactory = loadtime.get(QueryBuilderFactory.class);
+        scalarValueQuery_1 = queryBuilderFactory.create().allowMissingPropertyException().scalarProperty("pxObjClass").buildScalarValueQuery();
+    }
+
+    protected String evaluate(final Runtime runtime, final ClipboardPage myStepPage, final ParameterPage params) {
+        final PegaAPI pega = runtime.getPega();
+        final PublicAPI tools = runtime.getTools();
+        String var0 = scalarValueQuery_1.resolveToString(tools, myStepPage, ImmutablePropertyInfo.TYPE_TEXT);
+        if (((((((((((((((((((((((((((((((((((((((((((((var0.equals("Data-Admin-AppID")) || (var0.equals("Data-Admin-AuthService"))) || (var0.equals("Data-Admin-Calendar"))) || (var0.equals("Data-Admin-Connect-EmailListener"))) || (var0.equals("Data-Admin-Connect-EmailServer"))) || (var0.equals("Data-Admin-Connect-FileListener"))) || (var0.equals("Data-Admin-Connect-FTPServer"))) || (var0.equals("Data-Admin-Connect-JCAAdapter"))) || (var0.equals("Data-Admin-Connect-JMSListener"))) || (var0.equals("Data-Admin-Connect-JMSMDBListener"))) || (var0.equals("Data-Admin-Connect-JMSProducerModel"))) || (var0.equals("Data-Admin-Connect-JNDIServer"))) || (var0.equals("Data-Admin-Connect-MQListener"))) || (var0.equals("Data-Admin-Connect-MQServer"))) || (var0.equals("Data-Admin-DB-ClassGroup"))) || (var0.equals("Data-Admin-DB-Name"))) || (var0.equals("Data-Admin-DB-Table"))) || (var0.equals("Data-Admin-Organization"))) || (var0.equals("Data-Admin-OrgDivision"))) || (var0.equals("Data-Admin-OrgUnit"))) || (var0.equals("Data-Admin-Requestor"))) || (var0.equals("Data-Admin-RequestProcessor-Connect"))) || (var0.equals("Data-Admin-RequestProcessor-Service"))) || (var0.equals("Data-Admin-Security-Keystore"))) || (var0.equals("Data-Admin-ServicePackage"))) || (var0.equals("Data-Admin-System-Settings"))) || (var0.equals("Data-Admin-WorkBasket"))) || (var0.equals("Data-Admin-WorkGroup"))) || (var0.equals("Data-Content-Image"))) || (var0.equals("Data-COS-Admin-Printer"))) || (var0.equals("Data-COS-Admin-Server"))) || (var0.equals("Data-EmailAccount"))) || (var0.equals("Data-Admin-Operator-AccessGroup"))) || (var0.equals("Data-Admin-Operator-ID"))) || (var0.equals("Data-Admin-Security-WSSecurityProfile"))) || (var0.equals("Data-Admin-Connect-AtomServer"))) || (var0.equals("Data-Admin-Connect-SOAPServer"))) || (var0.equals("Data-Admin-RemoteSystem"))) || (var0.equals("Data-Admin-Security-OAuth-Client"))) || (var0.equals("Data-Admin-Security-AuthenticationProfile"))) || (var0.equals("Data-Admin-WebServices-Policy"))) || (var0.equals("Data-Admin-DataSource-SampleData"))) || (var0.equals("Data-Retention-Policy"))) || (var0.equals("Data-IntegrationSystem")))) {
+            return String.valueOf(true);
+        } else {
+            return String.valueOf(false);
+        }
+    }
+}
