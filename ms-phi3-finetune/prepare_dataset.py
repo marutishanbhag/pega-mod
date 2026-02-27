@@ -3,9 +3,13 @@ prepare_dataset.py
 
 Walk all .java Pega rule files in the parent directory, extract metadata,
 generate Q&A pairs in Phi-3 chat format, and write data/pega_qa.jsonl.
+
+Flags:
+  --include-raw-files   Also add every .java file as a code-in-context
+                        "study this file" example (code memorisation).
 """
 
-import os
+import argparse
 import re
 import json
 import pathlib
@@ -407,6 +411,58 @@ def generate_qa_pairs(
     return pairs
 
 
+# ── Raw file code-in-context ───────────────────────────────────────────────────
+
+
+def make_raw_file_example(path: pathlib.Path) -> dict | None:
+    """
+    Wrap the full .java file content in a chat message so the model
+    memorises the actual source code (code-in-context training).
+
+    The assistant response is a short acknowledgement that names the rule
+    type and namespace so the model links file content to metadata.
+    """
+    filename = path.name
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+
+    # Truncate very large files to 200 lines to stay within token budget
+    lines = source.splitlines()
+    if len(lines) > 200:
+        source = "\n".join(lines[:200]) + "\n// ... (truncated)"
+
+    rule_type = detect_rule_type(filename)
+    namespace = detect_namespace(filename)
+    ns_label = NAMESPACE_MAP.get(namespace, namespace)
+    rt_desc = RULE_TYPE_DESCRIPTIONS.get(rule_type, f"a Pega rule of type {rule_type}")
+
+    return {
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Here is the full source of a Pega rule file. "
+                    f"Study and remember its contents.\n\n"
+                    f"**Filename:** `{filename}`\n\n"
+                    f"```java\n{source}\n```"
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    f"I have read and understood this Pega rule file: `{filename}`.\n\n"
+                    f"- **Rule type**: {rt_desc}\n"
+                    f"- **Application**: {ns_label} (`{namespace}`)\n"
+                    f"I have memorised the full source code and can answer questions about it."
+                ),
+            },
+        ]
+    }
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 
@@ -442,6 +498,14 @@ def process_file(path: pathlib.Path) -> list[dict]:
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--include-raw-files",
+        action="store_true",
+        help="Also add every .java file as a code-in-context 'study this file' example",
+    )
+    args = parser.parse_args()
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Only keep files that belong to known project namespaces
@@ -461,6 +525,16 @@ def main():
         pairs = process_file(path)
         all_pairs.extend(pairs)
         print(f"  {path.name}: {len(pairs)} Q&A pairs")
+
+    # ── Raw file code-in-context examples ──────────────────────────────────────
+    if args.include_raw_files:
+        raw_examples = []
+        for path in java_files:
+            ex = make_raw_file_example(path)
+            if ex:
+                raw_examples.append(ex)
+        all_pairs.extend(raw_examples)
+        print(f"\n  + {len(raw_examples)} raw file code-in-context examples added")
 
     # ── Application-level Q&A (repo-wide knowledge) ────────────────────────────
     app_qa = [
