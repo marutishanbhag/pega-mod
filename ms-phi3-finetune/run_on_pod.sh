@@ -49,7 +49,8 @@ pip install --target=/workspace/pip_packages -q \
     "datasets>=2.20.0" \
     "accelerate>=0.31.0" \
     scipy \
-    vllm
+    vllm \
+    "huggingface-hub>=0.34.0,<1.0"
 
 log "  Done: $(ls /workspace/pip_packages | wc -l) packages installed"
 
