@@ -75,7 +75,7 @@ if [ ! -f "$DATA_DIR/train.jsonl" ]; then
     ls -lh /workspace/
     log "  Attempting to generate dataset from scripts..."
     cd "$SCRIPTS_DIR"
-    python prepare_dataset.py
+    python prepare_dataset.py --include-raw-files
     cd /
 else
     COUNT=$(wc -l < "$DATA_DIR/train.jsonl")

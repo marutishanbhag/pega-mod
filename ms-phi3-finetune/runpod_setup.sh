@@ -43,11 +43,12 @@ export PYTHONPATH=/workspace/pip_packages:$PYTHONPATH
 pip install --target=/workspace/pip_packages -q gradio httpx uvicorn fastapi
 echo "  Done."
 
-# ── Download chat UI script ────────────────────────────────────────────────────
+# ── Download chat UI scripts ───────────────────────────────────────────────────
 echo ""
-echo "[3/4] Downloading chat_ui.py..."
+echo "[3/4] Downloading chat_ui.py and chat_ui.html..."
 mkdir -p "$SCRIPTS_DIR"
-curl -fsSL "$GITHUB_RAW/chat_ui.py" -o "$SCRIPTS_DIR/chat_ui.py"
+curl -fsSL "$GITHUB_RAW/chat_ui.py"   -o "$SCRIPTS_DIR/chat_ui.py"
+curl -fsSL "$GITHUB_RAW/chat_ui.html" -o "$SCRIPTS_DIR/chat_ui.html"
 echo "  Done."
 
 # ── Start vLLM in background ───────────────────────────────────────────────────
