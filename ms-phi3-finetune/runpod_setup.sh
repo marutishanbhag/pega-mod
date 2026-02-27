@@ -38,9 +38,10 @@ echo "  Model OK: $(du -sh "$MODEL_PATH" | cut -f1)"
 # ── Install UI dependencies ────────────────────────────────────────────────────
 echo ""
 echo "[2/4] Installing chat UI dependencies..."
-export PIP_TARGET=/workspace/pip_packages
 export PYTHONPATH=/workspace/pip_packages:$PYTHONPATH
-pip install --target=/workspace/pip_packages -q gradio httpx uvicorn fastapi
+pip install --target=/workspace/pip_packages -q \
+    gradio httpx uvicorn fastapi \
+    "transformers>=5.0.0" vllm
 echo "  Done."
 
 # ── Download chat UI scripts ───────────────────────────────────────────────────
@@ -54,7 +55,7 @@ echo "  Done."
 # ── Start vLLM in background ───────────────────────────────────────────────────
 echo ""
 echo "[4/4] Starting vLLM..."
-python -m vllm.entrypoints.openai.api_server \
+PYTHONPATH=/workspace/pip_packages python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_PATH" \
     --dtype bfloat16 \
     --max-model-len 4096 \
@@ -85,7 +86,7 @@ echo "  Chat UI : http://0.0.0.0:$UI_PORT"
 echo "  API     : http://0.0.0.0:$VLLM_PORT/v1"
 echo ""
 
-python "$SCRIPTS_DIR/chat_ui.py" \
+PYTHONPATH=/workspace/pip_packages python "$SCRIPTS_DIR/chat_ui.py" \
     --vllm_url "http://localhost:$VLLM_PORT" \
     --port "$UI_PORT" \
     --model "pega-phi3-mini"
