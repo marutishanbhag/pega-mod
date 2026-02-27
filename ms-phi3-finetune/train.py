@@ -18,6 +18,7 @@ from peft import LoraConfig, TaskType, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    BitsAndBytesConfig,
 )
 from trl import SFTTrainer, SFTConfig
 
@@ -34,10 +35,18 @@ def parse_args():
     p.add_argument("--output_dir", default=str(SCRIPT_DIR / "output"))
     p.add_argument("--max_seq_length", type=int, default=2048)
     p.add_argument("--num_train_epochs", type=int, default=5)
-    p.add_argument("--per_device_train_batch_size", type=int, default=8)
-    p.add_argument("--gradient_accumulation_steps", type=int, default=2)
+    p.add_argument("--per_device_train_batch_size", type=int, default=2)
+    p.add_argument("--gradient_accumulation_steps", type=int, default=4)
     p.add_argument("--learning_rate", type=float, default=1e-4)
+    p.add_argument("--load_in_4bit", action="store_true",
+                   help="Use 4-bit QLoRA (for GPUs with <40GB VRAM)")
     return p.parse_args()
+
+
+def get_vram_gb() -> float:
+    if torch.cuda.is_available():
+        return torch.cuda.get_device_properties(0).total_memory / 1e9
+    return 0.0
 
 
 # ── LoRA config (CodeLlama target modules) ─────────────────────────────────────
@@ -88,11 +97,25 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    # ── Load model (full fp16, no quantization) ────────────────────────────────
-    print(f"Loading model {args.base_model} in fp16 (no quantization) ...")
+    # ── Auto-detect VRAM and choose quantization ───────────────────────────────
+    vram_gb = get_vram_gb()
+    use_4bit = args.load_in_4bit or vram_gb < 40.0
+    print(f"Detected VRAM: {vram_gb:.1f} GB — using {'4-bit QLoRA' if use_4bit else 'fp16 LoRA'}")
+
+    bnb_config = None
+    if use_4bit:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+
+    print(f"Loading model {args.base_model} ...")
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
-        torch_dtype=torch.float16,
+        quantization_config=bnb_config,
+        torch_dtype=torch.bfloat16 if use_4bit else torch.float16,
         device_map="auto",
         trust_remote_code=True,
     )
@@ -144,8 +167,8 @@ def main():
         learning_rate=args.learning_rate,
         lr_scheduler_type="cosine",
         warmup_ratio=0.10,
-        bf16=False,
-        fp16=True,
+        bf16=use_4bit,
+        fp16=not use_4bit,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         optim="adamw_torch",
