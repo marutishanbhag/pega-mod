@@ -6,3 +6,7 @@ trl>=0.9.6
 datasets>=2.20.0
 accelerate>=0.31.0
 scipy
+gradio
+httpx
+uvicorn
+fastapi

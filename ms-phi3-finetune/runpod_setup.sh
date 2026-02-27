@@ -2,55 +2,57 @@
 # =============================================================================
 # runpod_setup.sh
 #
-# Starts vLLM (API server) + Open WebUI (chat interface) on RunPod.
+# Starts vLLM (port 8000) + Gradio chat UI with proxy (port 3000).
 #
 # Ports:
 #   8000 — vLLM OpenAI-compatible API
-#   3000 — Open WebUI chat interface
+#   3000 — Gradio chat UI + FastAPI proxy (no CORS issues)
 #
-# RunPod configuration:
-#   - Template : runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
-#   - GPU      : RTX 4090 (24 GB VRAM)
-#   - Expose   : HTTP ports 8000 and 3000
-#   - Volume   : /workspace  (persistent storage)
+# RunPod: expose both ports 8000 and 3000.
 # =============================================================================
 
 set -e
 
 MODEL_PATH="${1:-/workspace/merged_model}"
 VLLM_PORT="${2:-8000}"
-WEBUI_PORT="${3:-3000}"
-WEBUI_DATA="/workspace/open-webui-data"
+UI_PORT="${3:-3000}"
+SCRIPTS_DIR="/workspace/scripts"
+GITHUB_RAW="https://raw.githubusercontent.com/marutishanbhag/pega-mod/feature/ms/ms-phi3-finetune"
 
 echo "=============================================="
-echo "  Pega Phi-3 — vLLM + Open WebUI"
+echo "  Pega Phi-3 — vLLM + Chat UI"
 echo "  Model    : $MODEL_PATH"
 echo "  API      : http://0.0.0.0:$VLLM_PORT/v1"
-echo "  Chat UI  : http://0.0.0.0:$WEBUI_PORT"
+echo "  Chat UI  : http://0.0.0.0:$UI_PORT"
 echo "=============================================="
 
-# ── Verify model directory ─────────────────────────────────────────────────────
+# ── Verify model ───────────────────────────────────────────────────────────────
 echo ""
-echo "[1/4] Checking model directory..."
+echo "[1/4] Checking model..."
 if [ ! -d "$MODEL_PATH" ] || [ ! -f "$MODEL_PATH/config.json" ]; then
     echo "ERROR: Model not found at $MODEL_PATH"
-    echo "Run the full pipeline first (training + merge steps)."
     exit 1
 fi
 echo "  Model OK: $(du -sh "$MODEL_PATH" | cut -f1)"
 
-# ── Install Open WebUI ─────────────────────────────────────────────────────────
+# ── Install UI dependencies ────────────────────────────────────────────────────
 echo ""
-echo "[2/4] Installing Open WebUI..."
+echo "[2/4] Installing chat UI dependencies..."
 export PIP_TARGET=/workspace/pip_packages
 export PYTHONPATH=/workspace/pip_packages:$PYTHONPATH
-pip install --target=/workspace/pip_packages open-webui --quiet
-echo "  Open WebUI installed."
+pip install --target=/workspace/pip_packages -q gradio httpx uvicorn fastapi
+echo "  Done."
+
+# ── Download chat UI script ────────────────────────────────────────────────────
+echo ""
+echo "[3/4] Downloading chat_ui.py..."
+mkdir -p "$SCRIPTS_DIR"
+curl -fsSL "$GITHUB_RAW/chat_ui.py" -o "$SCRIPTS_DIR/chat_ui.py"
+echo "  Done."
 
 # ── Start vLLM in background ───────────────────────────────────────────────────
 echo ""
-echo "[3/4] Starting vLLM API server on port $VLLM_PORT..."
-
+echo "[4/4] Starting vLLM..."
 python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_PATH" \
     --dtype bfloat16 \
@@ -61,42 +63,30 @@ python -m vllm.entrypoints.openai.api_server \
     --served-model-name "pega-phi3-mini" &
 
 VLLM_PID=$!
-echo "  vLLM PID: $VLLM_PID"
+echo "  vLLM PID: $VLLM_PID — waiting for it to be ready..."
 
-# Wait for vLLM to be ready
-echo "  Waiting for vLLM to be ready..."
 for i in $(seq 1 60); do
     if curl -sf "http://localhost:$VLLM_PORT/v1/models" > /dev/null 2>&1; then
         echo "  vLLM is ready!"
         break
     fi
     if [ $i -eq 60 ]; then
-        echo "ERROR: vLLM did not start in time. Check logs."
+        echo "ERROR: vLLM did not start in 3 minutes."
         exit 1
     fi
     sleep 3
 done
 
-# ── Start Open WebUI ───────────────────────────────────────────────────────────
+# ── Start Gradio chat UI ───────────────────────────────────────────────────────
 echo ""
-echo "[4/4] Starting Open WebUI on port $WEBUI_PORT..."
-echo "  Connecting to vLLM at http://localhost:$VLLM_PORT/v1"
-echo ""
-echo "  ✓ Chat UI will be available at: http://0.0.0.0:$WEBUI_PORT"
-echo "  ✓ API available at:             http://0.0.0.0:$VLLM_PORT/v1"
-echo ""
-echo "  On first open, create an admin account in the UI."
-echo "  The model 'pega-phi3-mini' will appear in the model selector."
+echo "Starting Gradio chat UI on port $UI_PORT..."
+echo "  Chat UI : http://0.0.0.0:$UI_PORT"
+echo "  API     : http://0.0.0.0:$VLLM_PORT/v1"
 echo ""
 
-mkdir -p "$WEBUI_DATA"
+python "$SCRIPTS_DIR/chat_ui.py" \
+    --vllm_url "http://localhost:$VLLM_PORT" \
+    --port "$UI_PORT" \
+    --model "pega-phi3-mini"
 
-OPENAI_API_KEY="none" \
-OPENAI_API_BASE_URL="http://localhost:$VLLM_PORT/v1" \
-DATA_DIR="$WEBUI_DATA" \
-PORT="$WEBUI_PORT" \
-HOST="0.0.0.0" \
-open-webui serve
-
-# Keep vLLM alive if Open WebUI exits
 wait $VLLM_PID
