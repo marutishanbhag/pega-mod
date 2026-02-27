@@ -25,7 +25,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument(
         "--base_model",
-        default="microsoft/Phi-3-mini-4k-instruct",
+        default="codellama/CodeLlama-13b-Instruct-hf",
         help="Base model ID or local path (loaded in fp16, no quantization)",
     )
     p.add_argument(
