@@ -306,15 +306,17 @@ def process_file(path: pathlib.Path) -> list[dict]:
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # All java files, deduplicated by filename (com/ subdir has copies of root files)
+    # Only keep files that belong to known project namespaces
+    # This filters out thousands of Pega internal files (ra_action_*, sh_stream_* etc.)
+    known_ns = list(NAMESPACE_MAP.keys())
     seen_names = set()
     java_files = []
     for f in sorted(REPO_ROOT.glob("**/*.java")):
-        if f.name not in seen_names:
+        if f.name not in seen_names and any(ns in f.name for ns in known_ns):
             seen_names.add(f.name)
             java_files.append(f)
 
-    print(f"Found {len(java_files)} .java files under {REPO_ROOT}")
+    print(f"Found {len(java_files)} project .java files (filtered to known namespaces)")
 
     all_pairs: list[dict] = []
     for path in java_files:
