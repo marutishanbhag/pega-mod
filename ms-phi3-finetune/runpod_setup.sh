@@ -17,7 +17,7 @@ MODEL_PATH="${1:-/workspace/merged_model}"
 VLLM_PORT="${2:-8000}"
 UI_PORT="${3:-3000}"
 SCRIPTS_DIR="/workspace/scripts"
-GITHUB_RAW="https://raw.githubusercontent.com/marutishanbhag/pega-mod/feature/ms/ms-phi3-finetune"
+GITHUB_RAW="https://raw.githubusercontent.com/marutishanbhag/pega-mod/feature/codellama/ms-phi3-finetune"
 
 echo "=============================================="
 echo "  Pega Phi-3 — vLLM + Chat UI"
