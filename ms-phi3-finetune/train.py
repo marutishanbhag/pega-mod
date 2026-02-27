@@ -1,8 +1,8 @@
 """
 train.py
 
-QLoRA fine-tuning of microsoft/Phi-3-mini-4k-instruct on the Pega Q&A dataset.
-Optimised for a single RTX 4090 (24 GB VRAM).
+LoRA fine-tuning of codellama/CodeLlama-13b-Instruct-hf on the Pega Q&A dataset.
+Optimised for large VRAM (200GB+) — full fp16, no quantization.
 
 Usage:
     python train.py [--base_model MODEL_ID] [--data_dir ./data] [--output_dir ./output]
@@ -18,13 +18,12 @@ from peft import LoraConfig, TaskType, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    BitsAndBytesConfig,
 )
 from trl import SFTTrainer, SFTConfig
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 
-DEFAULT_BASE_MODEL = "microsoft/Phi-3-mini-4k-instruct"
+DEFAULT_BASE_MODEL = "codellama/CodeLlama-13b-Instruct-hf"
 SCRIPT_DIR = pathlib.Path(__file__).parent
 
 
@@ -33,33 +32,22 @@ def parse_args():
     p.add_argument("--base_model", default=DEFAULT_BASE_MODEL)
     p.add_argument("--data_dir", default=str(SCRIPT_DIR / "data"))
     p.add_argument("--output_dir", default=str(SCRIPT_DIR / "output"))
-    p.add_argument("--max_seq_length", type=int, default=512)
-    p.add_argument("--num_train_epochs", type=int, default=1)
-    p.add_argument("--per_device_train_batch_size", type=int, default=4)
-    p.add_argument("--gradient_accumulation_steps", type=int, default=4)
-    p.add_argument("--learning_rate", type=float, default=2e-4)
+    p.add_argument("--max_seq_length", type=int, default=2048)
+    p.add_argument("--num_train_epochs", type=int, default=5)
+    p.add_argument("--per_device_train_batch_size", type=int, default=8)
+    p.add_argument("--gradient_accumulation_steps", type=int, default=2)
+    p.add_argument("--learning_rate", type=float, default=1e-4)
     return p.parse_args()
 
 
-# ── BitsAndBytes 4-bit config ──────────────────────────────────────────────────
-
-def make_bnb_config() -> BitsAndBytesConfig:
-    return BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
-
-
-# ── LoRA config (Phi-3 target modules) ────────────────────────────────────────
+# ── LoRA config (CodeLlama target modules) ─────────────────────────────────────
 
 def make_lora_config() -> LoraConfig:
     return LoraConfig(
-        r=16,
-        lora_alpha=32,
-        # Phi-3-mini attention + MLP projection layers
-        target_modules=["qkv_proj", "o_proj", "gate_up_proj", "down_proj"],
+        r=32,
+        lora_alpha=64,
+        # CodeLlama / Llama-2 attention + MLP projection layers
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         lora_dropout=0.05,
         bias="none",
         task_type=TaskType.CAUSAL_LM,
@@ -68,12 +56,11 @@ def make_lora_config() -> LoraConfig:
 
 # ── Chat-template formatting ───────────────────────────────────────────────────
 
-def format_phi3_chat(example: dict, tokenizer) -> dict:
+def format_chat(example: dict, tokenizer) -> dict:
     """
-    Convert a messages list to a single Phi-3 chat string.
-
-    Phi-3 template:
-        <|system|>\n{system}<|end|>\n<|user|>\n{user}<|end|>\n<|assistant|>\n{assistant}<|end|>
+    Convert a messages list to a single chat string using the model's template.
+    CodeLlama Instruct format:
+        [INST] <<SYS>>\n{system}\n<</SYS>>\n\n{user} [/INST] {assistant}
     """
     text = tokenizer.apply_chat_template(
         example["messages"],
@@ -97,19 +84,17 @@ def main():
         trust_remote_code=True,
         use_fast=True,
     )
-    tokenizer.pad_token = tokenizer.unk_token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    # ── Load model (4-bit) ─────────────────────────────────────────────────────
-    print(f"Loading model {args.base_model} in 4-bit ...")
-    bnb_config = make_bnb_config()
+    # ── Load model (full fp16, no quantization) ────────────────────────────────
+    print(f"Loading model {args.base_model} in fp16 (no quantization) ...")
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
-        quantization_config=bnb_config,
+        torch_dtype=torch.float16,
         device_map="auto",
         trust_remote_code=True,
-        dtype=torch.bfloat16,
-        attn_implementation="eager",  # flash_attention_2 optional if installed
     )
     model.config.use_cache = False  # required for gradient checkpointing
 
@@ -138,18 +123,18 @@ def main():
 
     # Apply chat template
     train_dataset = raw_datasets["train"].map(
-        lambda ex: format_phi3_chat(ex, tokenizer),
+        lambda ex: format_chat(ex, tokenizer),
         remove_columns=raw_datasets["train"].column_names,
     )
     eval_dataset = raw_datasets["test"].map(
-        lambda ex: format_phi3_chat(ex, tokenizer),
+        lambda ex: format_chat(ex, tokenizer),
         remove_columns=raw_datasets["test"].column_names,
     )
 
     print(f"Train examples: {len(train_dataset)}")
     print(f"Eval examples:  {len(eval_dataset)}")
 
-    # ── SFTConfig (replaces TrainingArguments in trl 0.29+) ────────────────────
+    # ── SFTConfig ──────────────────────────────────────────────────────────────
     training_args = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
@@ -158,11 +143,12 @@ def main():
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
-        bf16=True,
+        warmup_ratio=0.10,
+        bf16=False,
+        fp16=True,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        optim="paged_adamw_8bit",
+        optim="adamw_torch",
         logging_steps=10,
         save_steps=100,
         eval_strategy="steps",
@@ -170,7 +156,7 @@ def main():
         save_total_limit=3,
         load_best_model_at_end=False,
         report_to="none",
-        dataloader_num_workers=2,
+        dataloader_num_workers=4,
         remove_unused_columns=False,
         dataset_text_field="text",
         max_length=args.max_seq_length,
@@ -190,7 +176,7 @@ def main():
     print("\nStarting training ...")
     trainer.train()
 
-    # ── Save final adapter ────────────────────────────────────────────────────
+    # ── Save final adapter ─────────────────────────────────────────────────────
     adapter_path = os.path.join(args.output_dir, "final_adapter")
     print(f"\nSaving LoRA adapters to {adapter_path} ...")
     trainer.model.save_pretrained(adapter_path)

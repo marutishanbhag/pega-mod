@@ -13,7 +13,7 @@ import argparse
 import re
 import json
 import pathlib
-from datasets import Dataset
+import random
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -504,37 +504,65 @@ def main():
         action="store_true",
         help="Also add every .java file as a code-in-context 'study this file' example",
     )
+    parser.add_argument(
+        "--all-files",
+        action="store_true",
+        help="Include ALL .java files from the repo (not just known namespaces) as raw code-in-context examples",
+    )
     args = parser.parse_args()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Only keep files that belong to known project namespaces
-    # This filters out thousands of Pega internal files (ra_action_*, sh_stream_* etc.)
+    # Only keep files that belong to known project namespaces for Q&A pairs
     known_ns = list(NAMESPACE_MAP.keys())
     seen_names = set()
-    java_files = []
+    qa_files = []
     for f in sorted(REPO_ROOT.glob("**/*.java")):
+        # Skip ms-phi3-finetune directory (our own code)
+        if "ms-phi3-finetune" in str(f):
+            continue
         if f.name not in seen_names and any(ns in f.name for ns in known_ns):
             seen_names.add(f.name)
-            java_files.append(f)
+            qa_files.append(f)
 
-    print(f"Found {len(java_files)} project .java files (filtered to known namespaces)")
+    print(f"Found {len(qa_files)} project .java files (filtered to known namespaces) for Q&A")
 
     all_pairs: list[dict] = []
-    for path in java_files:
+    for path in qa_files:
         pairs = process_file(path)
         all_pairs.extend(pairs)
         print(f"  {path.name}: {len(pairs)} Q&A pairs")
 
-    # ── Raw file code-in-context examples ──────────────────────────────────────
+    # ── Raw file code-in-context examples (known namespace files) ──────────────
     if args.include_raw_files:
         raw_examples = []
-        for path in java_files:
+        for path in qa_files:
             ex = make_raw_file_example(path)
             if ex:
                 raw_examples.append(ex)
         all_pairs.extend(raw_examples)
-        print(f"\n  + {len(raw_examples)} raw file code-in-context examples added")
+        print(f"\n  + {len(raw_examples)} raw file code-in-context examples added (known namespaces)")
+
+    # ── All repo files as raw code-in-context examples ─────────────────────────
+    if args.all_files:
+        all_java = []
+        seen_all = set()
+        for f in sorted(REPO_ROOT.glob("**/*.java")):
+            if "ms-phi3-finetune" in str(f):
+                continue
+            if f.name not in seen_all:
+                seen_all.add(f.name)
+                all_java.append(f)
+
+        # Add files not already included in known namespace set
+        extra_files = [f for f in all_java if f not in qa_files]
+        raw_all = []
+        for path in all_java:
+            ex = make_raw_file_example(path)
+            if ex:
+                raw_all.append(ex)
+        all_pairs.extend(raw_all)
+        print(f"\n  + {len(raw_all)} total repo file code-in-context examples added ({len(extra_files)} extra beyond known namespaces)")
 
     # ── Application-level Q&A (repo-wide knowledge) ────────────────────────────
     app_qa = [
@@ -645,19 +673,23 @@ def main():
 
     print(f"\nTotal Q&A pairs: {len(all_pairs)}")
 
-    # Train/test split (90/10)
-    dataset = Dataset.from_list(all_pairs)
-    split = dataset.train_test_split(test_size=0.1, seed=42)
+    # Train/test split (90/10) — done manually, no datasets library needed
+    random.seed(42)
+    shuffled = all_pairs[:]
+    random.shuffle(shuffled)
+    split_idx = int(len(shuffled) * 0.9)
+    train_split = shuffled[:split_idx]
+    test_split = shuffled[split_idx:]
 
     train_path = OUTPUT_DIR / "train.jsonl"
     test_path = OUTPUT_DIR / "test.jsonl"
 
     with open(train_path, "w") as f:
-        for item in split["train"]:
+        for item in train_split:
             f.write(json.dumps(item) + "\n")
 
     with open(test_path, "w") as f:
-        for item in split["test"]:
+        for item in test_split:
             f.write(json.dumps(item) + "\n")
 
     # Also write combined file
@@ -665,8 +697,8 @@ def main():
         for item in all_pairs:
             f.write(json.dumps(item) + "\n")
 
-    print(f"\nWrote {len(split['train'])} train examples → {train_path}")
-    print(f"Wrote {len(split['test'])} test examples  → {test_path}")
+    print(f"\nWrote {len(train_split)} train examples → {train_path}")
+    print(f"Wrote {len(test_split)} test examples  → {test_path}")
     print(f"Wrote {len(all_pairs)} total examples   → {OUTPUT_FILE}")
 
 
