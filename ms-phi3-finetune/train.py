@@ -34,7 +34,7 @@ def parse_args():
     p.add_argument("--data_dir", default=str(SCRIPT_DIR / "data"))
     p.add_argument("--output_dir", default=str(SCRIPT_DIR / "output"))
     p.add_argument("--max_seq_length", type=int, default=512)
-    p.add_argument("--num_train_epochs", type=int, default=1)
+    p.add_argument("--num_train_epochs", type=int, default=3)
     p.add_argument("--per_device_train_batch_size", type=int, default=8)
     p.add_argument("--gradient_accumulation_steps", type=int, default=2)
     p.add_argument("--learning_rate", type=float, default=1e-4)
