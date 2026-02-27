@@ -196,33 +196,6 @@ def generate_qa_pairs(
         )
     )
 
-    # Q2 — Namespace
-    pairs.append(
-        make_message(
-            f"Which Pega application namespace or ruleset does this file belong to?\n\n{code_block}",
-            f"This rule belongs to the **{ns_label}** (namespace token: `{namespace}`). "
-            f"Pega uses namespace prefixes to organise rules by application layer, "
-            f"allowing rules to be inherited and overridden across the ruleset stack.",
-        )
-    )
-
-    # Q3 — Base class (only if we found one)
-    if base_class:
-        pairs.append(
-            make_message(
-                f"What Java base class does this Pega rule extend, and what is its role?\n\n{code_block}",
-                f"The generated Java class extends `{base_class}`. "
-                + (
-                    "In Pega, `AbstractFUASupport` (Final User Agent Support) is the standard "
-                    "base class for executable rules like Case Types, Flows, and Activities. "
-                    "It provides the `tools` and `pega` API handles, clipboard access, "
-                    "parameter pages, and tracing/logging infrastructure."
-                    if "AbstractFUASupport" in base_class
-                    else f"`{base_class}` provides the Pega rule execution framework for this rule type."
-                ),
-            )
-        )
-
     # Q4 — Purpose/function
     if purpose_str:
         pairs.append(
@@ -261,25 +234,7 @@ def generate_qa_pairs(
             )
         )
 
-    # Q5 — Case type / work object
-    work_object = None
-    if class_name:
-        # e.g. Rule_Obj_CaseType_OOD4NM_Loan_Work_Loan_pyDefault_Action_...
-        m = re.search(r"Work_(\w+?)_", class_name)
-        if m:
-            work_object = m.group(1)
-    if work_object:
-        pairs.append(
-            make_message(
-                f"Which case type or work object does this Pega rule belong to?\n\n{code_block}",
-                f"This rule is associated with the **{work_object}** work object class "
-                f"in the **{ns_label}** application. "
-                "In Pega, work objects (case types) are the primary entities users work on; "
-                "rules are qualified by the class hierarchy they belong to.",
-            )
-        )
-
-    # Q6 — Summary
+    # Q3 — Summary
     summary_parts = [
         f"This is {rt_desc} in the **{ns_label}** Pega application.",
     ]
@@ -293,6 +248,12 @@ def generate_qa_pairs(
         summary_parts.append(
             f"The rule handles the following purposes: {purpose_str}."
         )
+    # work_object from class name
+    work_object = None
+    if class_name:
+        m = re.search(r"Work_(\w+?)_", class_name)
+        if m:
+            work_object = m.group(1)
     if work_object:
         summary_parts.append(
             f"It applies to the **{work_object}** case/work object class."
@@ -345,17 +306,13 @@ def process_file(path: pathlib.Path) -> list[dict]:
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    java_files = sorted(REPO_ROOT.glob("*.java"))
-    # Also search one level deeper (e.g. com/ subdirectory)
-    java_files += sorted(REPO_ROOT.glob("**/*.java"))
-    # Deduplicate
-    seen = set()
-    unique_files = []
-    for f in java_files:
-        if f not in seen:
-            seen.add(f)
-            unique_files.append(f)
-    java_files = unique_files
+    # All java files, deduplicated by filename (com/ subdir has copies of root files)
+    seen_names = set()
+    java_files = []
+    for f in sorted(REPO_ROOT.glob("**/*.java")):
+        if f.name not in seen_names:
+            seen_names.add(f.name)
+            java_files.append(f)
 
     print(f"Found {len(java_files)} .java files under {REPO_ROOT}")
 
