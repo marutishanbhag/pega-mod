@@ -1,3 +1,6 @@
 ms-phi3-finetune/data/
 ms-phi3-finetune/output/
 ms-phi3-finetune/merged_model/
+codellama/data/
+codellama/output/
+codellama/merged_model/

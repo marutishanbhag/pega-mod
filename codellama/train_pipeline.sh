@@ -110,8 +110,20 @@ echo "  Done."
 echo ""
 echo "[3/7] Generating training dataset..."
 cd "$PIPELINE_DIR"
+
+# Remove any old data to ensure we train on freshly generated data
+rm -f data/train.jsonl data/test.jsonl data/pega_qa.jsonl
+
 python prepare_dataset.py
 echo "  Done."
+
+# Verify data was just generated (not stale)
+DATA_AGE=$(( $(date +%s) - $(stat -c %Y data/train.jsonl) ))
+if [ "$DATA_AGE" -gt 60 ]; then
+    echo "  ERROR: train.jsonl is ${DATA_AGE}s old — expected freshly generated data."
+    exit 1
+fi
+echo "  Data freshness OK (generated ${DATA_AGE}s ago)"
 echo "  Train examples: $(wc -l < data/train.jsonl)"
 echo "  Test examples : $(wc -l < data/test.jsonl)"
 
