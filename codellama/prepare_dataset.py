@@ -666,7 +666,9 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     known_ns = list(NAMESPACE_MAP.keys())
-    seen_names = set()
+
+    # ── Known-namespace files: used for Q&A pairs ──────────────────────────────
+    seen_names: set[str] = set()
     qa_files = []
     for f in sorted(REPO_ROOT.glob("**/*.java")):
         if "codellama" in str(f) or "ms-phi3-finetune" in str(f):
@@ -675,25 +677,44 @@ def main():
             seen_names.add(f.name)
             qa_files.append(f)
 
-    print(f"Found {len(qa_files)} project .java files for Q&A")
+    # ── All Java files: used for raw code-in-context examples ──────────────────
+    all_java_files = []
+    seen_all: set[str] = set()
+    for f in sorted(REPO_ROOT.glob("**/*.java")):
+        if "codellama" in str(f) or "ms-phi3-finetune" in str(f):
+            continue
+        if f.name not in seen_all:
+            seen_all.add(f.name)
+            all_java_files.append(f)
+
+    print(f"Found {len(qa_files)} known-namespace .java files for Q&A")
+    print(f"Found {len(all_java_files)} total .java files for code-in-context")
 
     all_pairs: list[dict] = []
 
-    # ── Q&A pairs ──────────────────────────────────────────────────────────────
+    # ── Q&A pairs (known namespace files only) ─────────────────────────────────
+    grounded_count = 0
     for path in qa_files:
         pairs = process_file(path)
         all_pairs.extend(pairs)
+        # Count grounded pairs (those with methods/properties extracted)
+        for p in pairs:
+            asst = p["messages"][2]["content"]
+            if "`" in asst and ("()" in asst or "tools" in asst or "Method" in asst):
+                grounded_count += 1
         print(f"  {path.name}: {len(pairs)} Q&A pairs")
 
-    # ── Raw file code-in-context examples (default on) ─────────────────────────
+    print(f"\n  Code-grounded pairs (with real methods/properties): {grounded_count}")
+
+    # ── Raw file code-in-context (ALL java files, default on) ──────────────────
     if not args.no_raw_files:
         raw_examples = []
-        for path in qa_files:
+        for path in all_java_files:
             ex = make_raw_file_example(path)
             if ex:
                 raw_examples.append(ex)
         all_pairs.extend(raw_examples)
-        print(f"\n  + {len(raw_examples)} raw file code-in-context examples added")
+        print(f"  + {len(raw_examples)} raw file code-in-context examples added ({len(all_java_files)} total java files)")
 
     # ── Application-level Q&A ──────────────────────────────────────────────────
     app_qa = make_app_level_qa()

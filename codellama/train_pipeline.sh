@@ -94,33 +94,80 @@ echo "  Test examples : $(wc -l < data/test.jsonl)"
 echo ""
 echo "  Verifying data quality..."
 
-# Check a sample Q&A is code-grounded
-echo "  Sample Q&A pair:"
-head -1 data/train.jsonl | python3 -c "
+python3 - <<'PYEOF'
 import json, sys
-d = json.loads(sys.stdin.read())
-msgs = d['messages']
-print('    USER    :', msgs[1]['content'][:120].replace('\n',' '))
-print('    ASSISTANT:', msgs[2]['content'][:200].replace('\n',' '))
-"
 
-# Check negative examples are present
-NEG_COUNT=$(grep -c "don't have that rule\|don't have any\|not have that" data/train.jsonl || true)
-echo "  Negative (anti-hallucination) examples: $NEG_COUNT"
+train_file = "data/train.jsonl"
+with open(train_file) as f:
+    examples = [json.loads(l) for l in f]
 
-# Check raw file examples are present
-RAW_COUNT=$(grep -c "Study and remember" data/train.jsonl || true)
-echo "  Raw file code-in-context examples: $RAW_COUNT"
+total = len(examples)
+neg_count = 0
+raw_count = 0
+grounded_count = 0
+template_only = 0
 
-if [ "$NEG_COUNT" -eq 0 ]; then
-    echo "  ERROR: No negative examples found — aborting. Check prepare_dataset.py."
-    exit 1
-fi
-if [ "$RAW_COUNT" -eq 0 ]; then
-    echo "  ERROR: No raw file examples found — aborting. Check prepare_dataset.py."
-    exit 1
-fi
-echo "  Data quality OK."
+for ex in examples:
+    msgs = ex["messages"]
+    user = msgs[1]["content"]
+    asst = msgs[2]["content"]
+
+    # Negative examples
+    if "don't have that" in asst or "not have that" in asst or "don't have any" in asst:
+        neg_count += 1
+
+    # Raw file examples
+    if "Study and remember" in user:
+        raw_count += 1
+
+    # Code-grounded: assistant references real backtick identifiers like `methodName()`
+    if "`" in asst and ("()" in asst or "tools." in asst):
+        grounded_count += 1
+    elif "Study and remember" not in user and "don't have" not in asst:
+        template_only += 1
+
+print(f"  Total examples          : {total}")
+print(f"  Code-grounded Q&A       : {grounded_count}")
+print(f"  Raw file (all java)     : {raw_count}")
+print(f"  Negative (no-halluc)    : {neg_count}")
+print(f"  Template-only (no code) : {template_only}")
+print()
+
+# Sample a grounded Q&A
+grounded = [e for e in examples
+            if "`" in e["messages"][2]["content"] and "()" in e["messages"][2]["content"]
+            and "Study and remember" not in e["messages"][1]["content"]]
+if grounded:
+    sample = grounded[0]["messages"]
+    print("  Sample grounded Q&A:")
+    print("    Q:", sample[1]["content"][:120].replace("\n"," "))
+    print("    A:", sample[2]["content"][:200].replace("\n"," "))
+
+# Sample a negative example
+negs = [e for e in examples if "don't have that" in e["messages"][2]["content"]]
+if negs:
+    sample = negs[0]["messages"]
+    print()
+    print("  Sample negative example:")
+    print("    Q:", sample[1]["content"][:120].replace("\n"," "))
+    print("    A:", sample[2]["content"][:150].replace("\n"," "))
+
+# Fail if critical categories are missing
+errors = []
+if neg_count == 0:
+    errors.append("ERROR: No negative examples found.")
+if raw_count == 0:
+    errors.append("ERROR: No raw file examples found.")
+if grounded_count == 0:
+    errors.append("ERROR: No code-grounded examples found.")
+if errors:
+    for e in errors:
+        print(e)
+    sys.exit(1)
+
+print()
+print("  Data quality OK — proceeding to training.")
+PYEOF
 
 # ── [4/7] Train ───────────────────────────────────────────────────────────────
 echo ""
