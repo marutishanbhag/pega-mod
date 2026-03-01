@@ -241,12 +241,17 @@ else
     pip install -q huggingface_hub
     if [ -z "$HF_TOKEN" ]; then
         echo "  WARNING: HF_TOKEN not set — trying without token (will fail for private repos)."
-    else
-        huggingface-cli login --token "$HF_TOKEN"
     fi
     echo "  Uploading to $HF_REPO ..."
-    huggingface-cli upload "$HF_REPO" "$MERGED_DIR/"
-    echo "  Upload complete."
+    python3 -c "
+from huggingface_hub import HfApi
+HfApi(token='$HF_TOKEN').upload_folder(
+    folder_path='$MERGED_DIR',
+    repo_id='$HF_REPO',
+    repo_type='model',
+)
+print('  Upload complete.')
+"
 
     # ── Upload training dataset to HF Hub ─────────────────────────────────────
     HF_DATASET_REPO="${HF_DATASET_REPO:-marutishanbhag/pega-codellama-13b-v2}"
