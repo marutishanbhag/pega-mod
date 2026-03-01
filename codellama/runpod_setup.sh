@@ -28,7 +28,7 @@ echo "=============================================="
 
 # ── Verify model ───────────────────────────────────────────────────────────────
 echo ""
-echo "[1/4] Checking model..."
+echo "[1/5] Checking model..."
 if [ ! -d "$MODEL_PATH" ] || [ ! -f "$MODEL_PATH/config.json" ]; then
     echo "ERROR: Model not found at $MODEL_PATH"
     exit 1
@@ -43,43 +43,79 @@ fi
 
 # ── Install dependencies at system level ──────────────────────────────────────
 echo ""
-echo "[2/4] Installing dependencies..."
-# Install everything at system level to avoid shadowing/conflict issues
+echo "[2/5] Installing dependencies..."
 pip install -q \
     "numpy<2.0" \
     "tokenizers==0.22.0" \
     "accelerate>=0.34.0" \
+    "transformers==4.45.2" \
+    "lm-format-enforcer==0.10.6" \
+    "outlines==0.0.46" \
     "vllm==0.6.3" \
     gradio httpx uvicorn fastapi
+
+# Fix pyairports (outlines dependency, broken pip package — create stub)
+mkdir -p /usr/local/lib/python3.11/dist-packages/pyairports
+echo "AIRPORT_LIST = []" > /usr/local/lib/python3.11/dist-packages/pyairports/airports.py
+touch /usr/local/lib/python3.11/dist-packages/pyairports/__init__.py
 echo "  Done."
+
+# ── Fix model config files ─────────────────────────────────────────────────────
+echo ""
+echo "[3/5] Fixing model config..."
+
+# Fix tokenizer_config.json: set correct tokenizer class and chat template
+python3 -c "
+import json, os
+
+# Fix tokenizer_config.json
+tok_cfg = '$MODEL_PATH/tokenizer_config.json'
+if os.path.exists(tok_cfg):
+    d = json.load(open(tok_cfg))
+    changed = False
+    if d.get('tokenizer_class') != 'CodeLlamaTokenizer':
+        d['tokenizer_class'] = 'CodeLlamaTokenizer'
+        changed = True
+        print('  Fixed tokenizer_class -> CodeLlamaTokenizer')
+    if 'chat_template' not in d:
+        d['chat_template'] = '{% for message in messages %}{% if message[\"role\"] == \"system\" %}<<SYS>>\n{{ message[\"content\"] }}\n<</SYS>>\n\n{% elif message[\"role\"] == \"user\" %}[INST] {{ message[\"content\"] }} [/INST]{% elif message[\"role\"] == \"assistant\" %} {{ message[\"content\"] }}</s>{% endif %}{% endfor %}'
+        changed = True
+        print('  Added CodeLlama chat_template')
+    if changed:
+        json.dump(d, open(tok_cfg, 'w'), indent=2)
+
+# Fix config.json: remove rope_scaling if present (causes vLLM AssertionError)
+cfg = '$MODEL_PATH/config.json'
+if os.path.exists(cfg):
+    d = json.load(open(cfg))
+    if 'rope_scaling' in d:
+        del d['rope_scaling']
+        json.dump(d, open(cfg, 'w'), indent=2)
+        print('  Removed rope_scaling from config.json')
+print('  Config OK')
+"
+
+# Download tokenizer.model if missing (needed by CodeLlamaTokenizer slow mode)
+if [ ! -f "$MODEL_PATH/tokenizer.model" ]; then
+    echo "  Downloading tokenizer.model from HuggingFace..."
+    python3 -c "
+from huggingface_hub import hf_hub_download
+hf_hub_download(repo_id='codellama/CodeLlama-13b-Instruct-hf', filename='tokenizer.model', local_dir='$MODEL_PATH')
+print('  tokenizer.model downloaded')
+"
+fi
 
 # ── Download chat UI scripts ───────────────────────────────────────────────────
 echo ""
-echo "[3/4] Downloading chat_ui.py and chat_ui.html..."
+echo "[4/5] Downloading chat_ui.py and chat_ui.html..."
 mkdir -p "$SCRIPTS_DIR"
 curl -fsSL "$GITHUB_RAW/chat_ui.py"   -o "$SCRIPTS_DIR/chat_ui.py"
 curl -fsSL "$GITHUB_RAW/chat_ui.html" -o "$SCRIPTS_DIR/chat_ui.html"
 echo "  Done."
 
-# ── Fix tokenizer_config.json if needed ───────────────────────────────────────
-TOK_CFG="$MODEL_PATH/tokenizer_config.json"
-if [ -f "$TOK_CFG" ]; then
-    python3 -c "
-import json
-path='$TOK_CFG'
-d=json.load(open(path))
-if d.get('tokenizer_class') != 'CodeLlamaTokenizer':
-    d['tokenizer_class']='CodeLlamaTokenizer'
-    json.dump(d, open(path,'w'), indent=2)
-    print('  Fixed tokenizer_class -> CodeLlamaTokenizer')
-else:
-    print('  tokenizer_class OK:', d['tokenizer_class'])
-"
-fi
-
 # ── Start vLLM in background ───────────────────────────────────────────────────
 echo ""
-echo "[4/4] Starting vLLM..."
+echo "[5/5] Starting vLLM..."
 python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_PATH" \
     --dtype bfloat16 \
@@ -87,18 +123,19 @@ python -m vllm.entrypoints.openai.api_server \
     --port "$VLLM_PORT" \
     --host 0.0.0.0 \
     --gpu-memory-utilization 0.90 \
-    --served-model-name "pega-codellama" &
+    --served-model-name "pega-codellama" \
+    --tokenizer-mode slow &
 
 VLLM_PID=$!
 echo "  vLLM PID: $VLLM_PID — waiting for it to be ready..."
 
-for i in $(seq 1 60); do
+for i in $(seq 1 80); do
     if curl -sf "http://localhost:$VLLM_PORT/v1/models" > /dev/null 2>&1; then
         echo "  vLLM is ready!"
         break
     fi
-    if [ $i -eq 60 ]; then
-        echo "ERROR: vLLM did not start in 3 minutes."
+    if [ $i -eq 80 ]; then
+        echo "ERROR: vLLM did not start in 4 minutes."
         exit 1
     fi
     sleep 3
