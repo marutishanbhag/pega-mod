@@ -38,7 +38,7 @@ if [ -z "$TMUX" ]; then
     # Install tmux if missing
     if ! command -v tmux &> /dev/null; then
         echo "  tmux not found — installing..."
-        apt-get install -y tmux -q
+        apt-get update -q && apt-get install -y tmux -q
     fi
 
     # Kill any previous session with the same name
