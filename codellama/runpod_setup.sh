@@ -44,15 +44,7 @@ fi
 # ── Install dependencies at system level ──────────────────────────────────────
 echo ""
 echo "[2/5] Installing dependencies..."
-pip install -q \
-    "numpy<2.0" \
-    "tokenizers==0.22.0" \
-    "accelerate>=0.34.0" \
-    "transformers==4.44.2" \
-    "lm-format-enforcer==0.10.6" \
-    "outlines==0.0.46" \
-    "vllm==0.6.3" \
-    gradio httpx uvicorn fastapi
+pip install -q "vllm==0.6.3" "numpy<2.0" "accelerate>=0.34.0" gradio httpx uvicorn fastapi
 
 # Fix pyairports (outlines dependency, broken pip package — create stub)
 mkdir -p /usr/local/lib/python3.11/dist-packages/pyairports
