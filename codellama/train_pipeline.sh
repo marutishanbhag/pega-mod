@@ -65,14 +65,18 @@ echo "  Done."
 echo ""
 echo "[2/7] Installing dependencies..."
 pip install -q --upgrade pip
-pip install -q \
+
+# Upgrade PyTorch first to ensure bitsandbytes compatibility
+pip install -q --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# Install remaining deps with compatible versions
+pip install -q --upgrade \
     "transformers>=5.0.0" \
     "peft>=0.12.0" \
     "trl>=0.9.6" \
     "datasets>=2.20.0" \
     "accelerate>=0.31.0" \
-    "bitsandbytes>=0.43.0" \
-    torch \
+    "bitsandbytes>=0.44.0" \
     "huggingface_hub>=0.23.0" \
     gradio httpx uvicorn fastapi
 echo "  Done."
@@ -85,6 +89,38 @@ python prepare_dataset.py
 echo "  Done."
 echo "  Train examples: $(wc -l < data/train.jsonl)"
 echo "  Test examples : $(wc -l < data/test.jsonl)"
+
+# ── Data quality checks ────────────────────────────────────────────────────────
+echo ""
+echo "  Verifying data quality..."
+
+# Check a sample Q&A is code-grounded
+echo "  Sample Q&A pair:"
+head -1 data/train.jsonl | python3 -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+msgs = d['messages']
+print('    USER    :', msgs[1]['content'][:120].replace('\n',' '))
+print('    ASSISTANT:', msgs[2]['content'][:200].replace('\n',' '))
+"
+
+# Check negative examples are present
+NEG_COUNT=$(grep -c "don't have that rule\|don't have any\|not have that" data/train.jsonl || true)
+echo "  Negative (anti-hallucination) examples: $NEG_COUNT"
+
+# Check raw file examples are present
+RAW_COUNT=$(grep -c "Study and remember" data/train.jsonl || true)
+echo "  Raw file code-in-context examples: $RAW_COUNT"
+
+if [ "$NEG_COUNT" -eq 0 ]; then
+    echo "  ERROR: No negative examples found — aborting. Check prepare_dataset.py."
+    exit 1
+fi
+if [ "$RAW_COUNT" -eq 0 ]; then
+    echo "  ERROR: No raw file examples found — aborting. Check prepare_dataset.py."
+    exit 1
+fi
+echo "  Data quality OK."
 
 # ── [4/7] Train ───────────────────────────────────────────────────────────────
 echo ""
