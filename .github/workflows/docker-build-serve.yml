@@ -1,17 +1,20 @@
-name: Build & Push Fine-Tuning Docker Image
+name: Build & Push Serve Docker Image
 
 on:
   push:
     branches:
-      - feature/ms
+      - feature/codellama
       - main
     paths:
-      - "codellama/**"
-      - ".github/workflows/docker-build.yml"
-  workflow_dispatch:   # allow manual trigger from GitHub UI
+      - "codellama/Dockerfile.serve"
+      - "codellama/serve_entrypoint.sh"
+      - "codellama/chat_ui.py"
+      - "codellama/chat_ui.html"
+      - ".github/workflows/docker-build-serve.yml"
+  workflow_dispatch:
 
 env:
-  IMAGE_NAME: pega-codellama-finetune
+  IMAGE_NAME: pega-codellama-serve
   CONTEXT: codellama
 
 jobs:
@@ -42,11 +45,10 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push Docker image
-        id: build-push
         uses: docker/build-push-action@v5
         with:
           context: ${{ env.CONTEXT }}
-          file: ${{ env.CONTEXT }}/Dockerfile
+          file: ${{ env.CONTEXT }}/Dockerfile.serve
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -54,15 +56,4 @@ jobs:
           cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
 
       - name: Image digest
-        run: echo "Image pushed with digest ${{ steps.build-push.outputs.digest }}"
-
-      - name: Verify RunPod API token is set
-        run: |
-          if [ -z "${{ secrets.RUNPOD_API_KEY }}" ]; then
-            echo "WARNING: RUNPOD_API_KEY secret is not set."
-            echo "Add it in: repo Settings → Secrets and variables → Actions → New repository secret"
-          else
-            echo "RunPod API key is configured."
-          fi
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: echo "Serve image pushed with digest ${{ steps.build-push.outputs.digest }}"

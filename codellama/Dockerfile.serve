@@ -1,0 +1,63 @@
+# =============================================================================
+# Dockerfile.serve — Pega CodeLlama inference image (Option C)
+#
+# Weights are NOT baked in. At container startup, serve_entrypoint.sh
+# downloads the model from HuggingFace Hub into /workspace/model.
+#
+# Required env vars at runtime:
+#   HF_TOKEN      — HuggingFace access token (for private repos)
+#   HF_MODEL_ID   — e.g. "your-hf-username/pega-codellama-13b"
+#
+# Optional env vars:
+#   VLLM_PORT     — default 8000
+#   UI_PORT       — default 3000
+#   DTYPE         — default bfloat16
+#   MAX_MODEL_LEN — default 4096
+#   GPU_MEM_UTIL  — default 0.90
+#
+# Build via GitHub Actions (.github/workflows/docker-build-serve.yml)
+#
+# Run example:
+#   docker run --gpus all \
+#     -e HF_TOKEN=hf_xxx \
+#     -e HF_MODEL_ID=your-hf-username/pega-codellama-13b \
+#     -p 8000:8000 -p 3000:3000 \
+#     your-dockerhub/pega-codellama-serve:latest
+#
+# To persist weights across restarts (skip re-download):
+#   docker run --gpus all \
+#     -e HF_TOKEN=hf_xxx \
+#     -e HF_MODEL_ID=your-hf-username/pega-codellama-13b \
+#     -v /mnt/storage/model_cache:/workspace/model \
+#     -p 8000:8000 -p 3000:3000 \
+#     your-dockerhub/pega-codellama-serve:latest
+# =============================================================================
+
+FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Install only inference dependencies (no training libs)
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+        "vllm>=0.4.0" \
+        "huggingface_hub>=0.23.0" \
+        "transformers>=5.0.0" \
+        httpx \
+        uvicorn \
+        fastapi
+
+# Copy serving scripts
+COPY serve_entrypoint.sh chat_ui.py chat_ui.html /workspace/
+RUN chmod +x /workspace/serve_entrypoint.sh
+
+EXPOSE 8000 3000
+
+ENTRYPOINT ["/workspace/serve_entrypoint.sh"]
