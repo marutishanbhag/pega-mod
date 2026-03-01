@@ -136,15 +136,17 @@ template_only = 0
 
 for ex in examples:
     msgs = ex["messages"]
-    user = msgs[1]["content"]
-    asst = msgs[2]["content"]
+    # Support both with and without system message (msgs[0] or msgs[1] may be user)
+    all_text = " ".join(m["content"] for m in msgs)
+    user = next((m["content"] for m in msgs if m["role"] == "user"), "")
+    asst = next((m["content"] for m in msgs if m["role"] == "assistant"), "")
 
     # Negative examples
-    if "don't have that" in asst or "not have that" in asst or "don't have any" in asst:
+    if "don't have that" in asst or "not have that" in asst or "don't have any" in asst or "don't have" in asst:
         neg_count += 1
 
     # Raw file examples (support both old and new phrasing)
-    if "Study and remember" in user or "Study its contents" in user:
+    if "Study and remember" in user or "Study its contents" in user or "Study" in user:
         raw_count += 1
 
     # Code-grounded: assistant references real backtick identifiers like `methodName()`
