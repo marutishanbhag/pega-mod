@@ -35,6 +35,12 @@ if [ ! -d "$MODEL_PATH" ] || [ ! -f "$MODEL_PATH/config.json" ]; then
 fi
 echo "  Model OK: $(du -sh "$MODEL_PATH" | cut -f1)"
 
+# ── Remove stale pip_packages dir (causes shadowing conflicts) ─────────────────
+if [ -d "/workspace/pip_packages" ]; then
+    echo "  Removing stale /workspace/pip_packages to prevent shadowing..."
+    rm -rf /workspace/pip_packages
+fi
+
 # ── Install dependencies at system level ──────────────────────────────────────
 echo ""
 echo "[2/4] Installing dependencies..."
@@ -58,7 +64,7 @@ echo "  Done."
 # ── Start vLLM in background ───────────────────────────────────────────────────
 echo ""
 echo "[4/4] Starting vLLM..."
-PYTHONPATH=/workspace/pip_packages python -m vllm.entrypoints.openai.api_server \
+python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_PATH" \
     --dtype bfloat16 \
     --max-model-len 4096 \
@@ -89,7 +95,7 @@ echo "  Chat UI : http://0.0.0.0:$UI_PORT"
 echo "  API     : http://0.0.0.0:$VLLM_PORT/v1"
 echo ""
 
-PYTHONPATH=/workspace/pip_packages python "$SCRIPTS_DIR/chat_ui.py" \
+python "$SCRIPTS_DIR/chat_ui.py" \
     --vllm_url "http://localhost:$VLLM_PORT" \
     --port "$UI_PORT" \
     --model "pega-codellama"
