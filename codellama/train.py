@@ -20,6 +20,7 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
 )
+from transformers import EarlyStoppingCallback
 from trl import SFTTrainer, SFTConfig
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
@@ -37,7 +38,7 @@ def parse_args():
     p.add_argument("--num_train_epochs", type=int, default=3)
     p.add_argument("--per_device_train_batch_size", type=int, default=8)
     p.add_argument("--gradient_accumulation_steps", type=int, default=2)
-    p.add_argument("--learning_rate", type=float, default=1e-4)
+    p.add_argument("--learning_rate", type=float, default=5e-5)
     p.add_argument("--load_in_4bit", action="store_true",
                    help="Use 4-bit QLoRA (for GPUs with <40GB VRAM)")
     return p.parse_args()
@@ -57,7 +58,7 @@ def make_lora_config() -> LoraConfig:
         lora_alpha=64,
         # CodeLlama / Llama-2 attention + MLP projection layers
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_dropout=0.05,
+        lora_dropout=0.10,
         bias="none",
         task_type=TaskType.CAUSAL_LM,
     )
@@ -177,7 +178,9 @@ def main():
         eval_strategy="steps",
         eval_steps=100,
         save_total_limit=3,
-        load_best_model_at_end=False,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
         report_to="none",
         dataloader_num_workers=4,
         remove_unused_columns=False,
@@ -193,16 +196,22 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         args=training_args,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
     )
 
     # ── Train ──────────────────────────────────────────────────────────────────
     print("\nStarting training ...")
     trainer.train()
 
-    # ── Save final adapter ─────────────────────────────────────────────────────
+    # ── Save best adapter (lowest eval_loss checkpoint) ───────────────────────
     adapter_path = os.path.join(args.output_dir, "final_adapter")
-    print(f"\nSaving LoRA adapters to {adapter_path} ...")
-    trainer.model.save_pretrained(adapter_path)
+    best_ckpt = getattr(trainer.state, "best_model_checkpoint", None)
+    best_loss = getattr(trainer.state, "best_metric", None)
+    print(f"\nBest checkpoint : {best_ckpt}")
+    print(f"Best eval_loss  : {best_loss}")
+    print(f"Saving LoRA adapters to {adapter_path} ...")
+    # trainer.save_model() respects load_best_model_at_end and saves the best checkpoint
+    trainer.save_model(adapter_path)
     trainer.processing_class.save_pretrained(adapter_path)
 
     print("\nTraining complete.")
