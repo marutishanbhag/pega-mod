@@ -35,18 +35,16 @@ if [ ! -d "$MODEL_PATH" ] || [ ! -f "$MODEL_PATH/config.json" ]; then
 fi
 echo "  Model OK: $(du -sh "$MODEL_PATH" | cut -f1)"
 
-# ── Install UI dependencies ────────────────────────────────────────────────────
+# ── Install dependencies at system level ──────────────────────────────────────
 echo ""
-echo "[2/4] Installing chat UI dependencies..."
-export PYTHONPATH=/workspace/pip_packages:$PYTHONPATH
-# Fix tokenizers at system level first (pip_packages tokenizers gets shadowed by system version)
-pip install -q "tokenizers==0.22.0"
-
-# Install vLLM and UI deps into pip_packages
-rm -rf /workspace/pip_packages
-pip install --target=/workspace/pip_packages -q \
-    gradio httpx uvicorn fastapi \
-    "vllm==0.6.3"
+echo "[2/4] Installing dependencies..."
+# Install everything at system level to avoid shadowing/conflict issues
+pip install -q \
+    "numpy<2.0" \
+    "tokenizers==0.22.0" \
+    "accelerate>=0.34.0" \
+    "vllm==0.6.3" \
+    gradio httpx uvicorn fastapi
 echo "  Done."
 
 # ── Download chat UI scripts ───────────────────────────────────────────────────
