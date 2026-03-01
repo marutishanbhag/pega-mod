@@ -2,11 +2,14 @@
 prepare_dataset.py
 
 Walk all .java Pega rule files in the parent directory, extract metadata,
-generate Q&A pairs in Phi-3 chat format, and write data/pega_qa.jsonl.
+generate Q&A pairs in CodeLlama chat format, and write data/train.jsonl + data/test.jsonl.
 
-Flags:
-  --include-raw-files   Also add every .java file as a code-in-context
-                        "study this file" example (code memorisation).
+Improvements over v1:
+  - Smart per-rule-type line limits (stays within 4096 token context)
+  - Code-grounded answers: extract real method names, fields, logic from source
+  - Additional code-grounded questions (methods, properties, flow calls)
+  - Raw file examples always included (no flag needed)
+  - Negative examples to reduce hallucination
 """
 
 import argparse
@@ -25,7 +28,8 @@ OUTPUT_FILE = OUTPUT_DIR / "pega_qa.jsonl"
 SYSTEM_PROMPT = (
     "You are a Pega platform expert. You have deep knowledge of Pega rule types, "
     "rulesets, case types, flows, activities, and the Java source code that Pega "
-    "generates for each rule. Answer questions clearly and accurately."
+    "generates for each rule. Answer questions clearly and accurately based only "
+    "on what you have seen in the training data. If you are not certain, say so."
 )
 
 # Rule type → human-readable description
@@ -50,15 +54,50 @@ NAMESPACE_MAP = {
     "LTM_Onboarding": "LTM Onboarding application",
     "LTM_BFS": "LTM BFS (Back-office Financial Services) application",
     "OOD4NM_Loan": "OOD4NM Loan application",
-    "OLFHF9_Onboaring": "OLFHF9 Onboarding application",  # note: 'Onboaring' is intentional typo in source
+    "OLFHF9_Onboaring": "OLFHF9 Onboarding application",
     "OFON2J_ProcessO": "OFON2J ProcessO (Onboarding Process) application",
 }
+
+# Per-rule-type max lines for snippets and raw file examples
+# Based on file size analysis: HTML streams are 5000+ lines (mostly boilerplate),
+# Flows are 3000-3600 lines, CaseType/Activity are smaller.
+# CodeLlama context = 4096 tokens ~ 1000 lines max safe limit.
+RULE_TYPE_MAX_LINES = {
+    "Rule_HTML_Section": 300,    # mostly boilerplate HTML rendering
+    "Rule_HTML_Harness": 300,
+    "sh_stream": 200,
+    "Rule_Obj_Flow": 600,        # important logic but large files
+    "Rule_Obj_CaseType": 800,    # critical — keep as much as possible
+    "Rule_Obj_FlowAction": 600,
+    "Rule_Obj_Activity": 800,
+    "Rule_Obj_Model": 600,
+    "Rule_PortalSkin": 300,
+    "Rule_Obj_Report_Definition": 400,
+    "Rule_Declare_Index": 400,
+    "ra_model": 200,
+}
+DEFAULT_MAX_LINES = 400
+
+SNIPPET_MAX_LINES = {
+    "Rule_HTML_Section": 150,
+    "Rule_HTML_Harness": 150,
+    "sh_stream": 100,
+    "Rule_Obj_Flow": 200,
+    "Rule_Obj_CaseType": 250,
+    "Rule_Obj_FlowAction": 200,
+    "Rule_Obj_Activity": 250,
+    "Rule_Obj_Model": 200,
+    "Rule_PortalSkin": 150,
+    "Rule_Obj_Report_Definition": 200,
+    "Rule_Declare_Index": 200,
+    "ra_model": 100,
+}
+DEFAULT_SNIPPET_LINES = 150
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
 def detect_rule_type(filename: str) -> str:
-    """Return the canonical rule-type prefix from the filename."""
     for prefix in [
         "Rule_HTML_Harness",
         "Rule_HTML_Section",
@@ -79,11 +118,9 @@ def detect_rule_type(filename: str) -> str:
 
 
 def detect_namespace(filename: str) -> str:
-    """Return the application namespace token from the filename."""
     for ns in NAMESPACE_MAP:
         if ns in filename:
             return ns
-    # Fallback: pull second/third segment from Rule_* filenames
     parts = filename.split("_")
     if len(parts) >= 4 and parts[0] == "Rule":
         return "_".join(parts[3:5])
@@ -91,31 +128,16 @@ def detect_namespace(filename: str) -> str:
 
 
 def extract_class_info(source: str):
-    """
-    Return (class_name, base_class) from the public class declaration.
-    """
-    m = re.search(
-        r"public\s+class\s+(\w+)\s+extends\s+([\w.]+)",
-        source,
-    )
+    m = re.search(r"public\s+class\s+(\w+)\s+extends\s+([\w.]+)", source)
     if m:
         return m.group(1), m.group(2)
     return None, None
 
 
 def extract_purpose(source: str) -> str | None:
-    """
-    Extract the purpose string from code like:
-        purpose.equals("CREATECASE")
-    or
-        mRuleSet = "Loan";  (for CaseType, purpose comes from getPurpose / purpose param)
-    """
     purposes = re.findall(r'purpose\.equals\("([^"]+)"\)', source)
     if purposes:
         return ", ".join(sorted(set(purposes)))
-    m = re.search(r'mCaseTypeHandle\s*=\s*"([^"]+)"', source)
-    if m:
-        return None  # purpose inferred from rule type
     return None
 
 
@@ -124,11 +146,41 @@ def extract_ruleset_name(source: str) -> str | None:
     return m.group(1) if m else None
 
 
-def meaningful_snippet(lines: list[str], max_lines: int = 80) -> str:
-    """
-    Skip boilerplate (package, copyright block, imports) and return
-    up to max_lines of the substantive class body.
-    """
+def extract_methods(source: str) -> list[str]:
+    """Extract public/protected method signatures from the source."""
+    methods = re.findall(
+        r'(?:public|protected)\s+\w[\w<>\[\]]*\s+(\w+)\s*\([^)]{0,120}\)',
+        source,
+    )
+    # Filter out constructors and very common boilerplate
+    skip = {"perform", "equals", "hashCode", "toString", "getClass"}
+    return [m for m in methods if m not in skip][:15]
+
+
+def extract_properties(source: str) -> list[str]:
+    """Extract Pega property references like tools.getProperty('pyStatusWork')."""
+    props = re.findall(r'getProperty\("([^"]+)"\)', source)
+    props += re.findall(r'putProperty\("([^"]+)"', source)
+    props += re.findall(r'tools\.get\w+\("([^"]+)"\)', source)
+    return list(dict.fromkeys(props))[:15]  # dedupe, keep order, cap at 15
+
+
+def extract_flow_calls(source: str) -> list[str]:
+    """Extract flow/activity calls like tools.doActivity('ActivityName')."""
+    calls = re.findall(r'doActivity\("([^"]+)"\)', source)
+    calls += re.findall(r'callFlow\("([^"]+)"\)', source)
+    calls += re.findall(r'startFlow\("([^"]+)"\)', source)
+    calls += re.findall(r'"([A-Z][A-Za-z0-9_]+Flow)"', source)
+    return list(dict.fromkeys(calls))[:10]
+
+
+def extract_purpose_branches(source: str) -> list[str]:
+    """Extract all purpose.equals() branch values."""
+    return sorted(set(re.findall(r'purpose\.equals\("([^"]+)"\)', source)))
+
+
+def meaningful_snippet(lines: list[str], max_lines: int) -> str:
+    """Skip boilerplate (package, copyright, imports) and return substantive class body."""
     in_comment = False
     body_lines = []
     past_imports = False
@@ -176,45 +228,39 @@ def generate_qa_pairs(
     purpose_str: str | None,
     ruleset_name: str | None,
     snippet: str,
+    source: str,
 ) -> list[dict]:
     pairs = []
 
     rt_desc = RULE_TYPE_DESCRIPTIONS.get(rule_type, f"a Pega rule of type {rule_type}")
     ns_label = NAMESPACE_MAP.get(namespace, namespace)
-    base_label = base_class or "AbstractFUASupport (Pega internal base)"
-
     code_block = f"```java\n{snippet}\n```"
 
-    # Derive work object from class name
+    # Extract grounded info from actual source
+    methods = extract_methods(source)
+    properties = extract_properties(source)
+    flow_calls = extract_flow_calls(source)
+    purpose_branches = extract_purpose_branches(source)
+
     work_object = None
     if class_name:
         m = re.search(r"Work_(\w+?)_", class_name)
         if m:
             work_object = m.group(1)
 
-    # Infer purpose text
-    type_purpose_map = {
-        "Rule_HTML_Section": "render a reusable UI section/panel that can be embedded in harnesses and other sections",
-        "Rule_HTML_Harness": "render a full portal page layout, assembling sections into a complete screen",
-        "Rule_Obj_Flow": "orchestrate the process steps, assignments, and routing for a case lifecycle",
-        "Rule_Obj_FlowAction": "define the form layout and field data submitted at a single flow step",
-        "Rule_Obj_Activity": "execute server-side procedural logic such as data retrieval, validation, or integration calls",
-        "Rule_Obj_Model": "set default field values or run decision logic when a case is created or updated",
-        "Rule_PortalSkin": "apply visual CSS-based styling/theming to a Pega operator portal",
-        "Rule_Obj_Report_Definition": "define the columns, filters, and sorting for a case list report",
-        "Rule_Declare_Index": "maintain a database index on a property for efficient rule resolution and reporting",
-        "sh_stream": "provide a compiled HTML fragment rendered as part of the Pega UI rendering pipeline",
-        "ra_model": "provide compiled model/activity bytecode executed by the Pega rules engine",
-    }
-    inferred_purpose = type_purpose_map.get(rule_type, f"implement {rt_desc} logic")
-
     # ── Q1: Rule type ──────────────────────────────────────────────────────────
-    pairs.append(make_message(
-        f"What type of Pega rule is this file and what does it do?\n\n{code_block}",
+    answer_q1 = (
         f"This file is {rt_desc}. "
         f"It belongs to the **{ns_label}** ruleset"
-        + (f" and handles the **{ruleset_name}** work object class." if ruleset_name else ".")
-        + (f" The rule supports the following purposes: {purpose_str}." if purpose_str else ""),
+        + (f" and the **{ruleset_name}** work object class." if ruleset_name else ".")
+    )
+    if purpose_branches:
+        answer_q1 += f"\n\nIt handles the following purpose branches: {', '.join(f'`{p}`' for p in purpose_branches)}."
+    if class_name:
+        answer_q1 += f"\n\nThe generated Java class is `{class_name}`."
+    pairs.append(make_message(
+        f"What type of Pega rule is this file and what does it do?\n\n{code_block}",
+        answer_q1,
     ))
 
     # ── Q2: Namespace ──────────────────────────────────────────────────────────
@@ -225,39 +271,53 @@ def generate_qa_pairs(
         f"allowing rules to be inherited and overridden across the ruleset stack.",
     ))
 
-    # ── Q3: Base class ─────────────────────────────────────────────────────────
-    if base_class:
+    # ── Q3: Methods (code-grounded) ────────────────────────────────────────────
+    if methods:
         pairs.append(make_message(
-            f"What Java base class does this Pega rule extend and what does it provide?\n\n{code_block}",
-            f"The generated class extends `{base_class}`. "
-            + (
-                "In Pega, `AbstractFUASupport` is the standard base for executable rules "
-                "(Case Types, Flows, Activities). It provides the `tools` and `pega` API handles, "
-                "clipboard access, parameter pages, and tracing infrastructure."
-                if "AbstractFUASupport" in base_class
-                else f"`{base_class}` provides the Pega rule execution framework for this rule type."
-            ),
+            f"What methods are defined in this Pega rule?\n\n{code_block}",
+            f"The following methods are defined in `{class_name or filename}`:\n"
+            + "\n".join(f"- `{m}()`" for m in methods)
+            + f"\n\nThis is a `{rule_type}` rule in the **{ns_label}** application.",
         ))
 
-    # ── Q4: Purpose / function ─────────────────────────────────────────────────
-    if purpose_str:
+    # ── Q4: Properties (code-grounded) ────────────────────────────────────────
+    if properties:
         pairs.append(make_message(
-            f"What is the purpose of this Pega rule based on the source code?\n\n{code_block}",
-            f"This Case Type rule handles the following purposes: **{purpose_str}**.\n"
-            "In Pega, a Case Type rule branches on `pyCaseTypePurpose`:\n"
-            "- `CREATECASE`: initialises a new case/work object\n"
-            "- `GETSTARTINGFLOWS`: returns flows that can start the case\n"
-            "- `ADHOCFLOWS`: returns ad-hoc flows available for the case\n"
-            "- `GETFLOWCALLPARAMS`: retrieves parameters for flow invocation",
-        ))
-    else:
-        pairs.append(make_message(
-            f"What is the purpose or function of this Pega rule?\n\n{code_block}",
-            f"This rule is designed to {inferred_purpose}. "
-            f"As a `{rule_type}`, it is part of the **{ns_label}** application layer.",
+            f"What Pega properties does this rule read or write?\n\n{code_block}",
+            f"This rule reads/writes the following Pega properties:\n"
+            + "\n".join(f"- `{p}`" for p in properties)
+            + f"\n\nThese are accessed via the `tools` API in the **{ns_label}** application.",
         ))
 
-    # ── Q5: Work object / case type ────────────────────────────────────────────
+    # ── Q5: Flow/activity calls (code-grounded) ────────────────────────────────
+    if flow_calls:
+        pairs.append(make_message(
+            f"What flows or activities does this rule invoke?\n\n{code_block}",
+            f"This rule invokes the following flows or activities:\n"
+            + "\n".join(f"- `{c}`" for c in flow_calls)
+            + f"\n\nThis is part of the **{ns_label}** application.",
+        ))
+
+    # ── Q6: Purpose branches (code-grounded) ──────────────────────────────────
+    if purpose_branches:
+        branch_descriptions = {
+            "CREATECASE": "initialises a new case/work object",
+            "GETSTARTINGFLOWS": "returns the flows that can start the case",
+            "ADHOCFLOWS": "returns ad-hoc flows available for the case",
+            "GETFLOWCALLPARAMS": "retrieves parameters for flow invocation",
+            "GETDEADLINES": "defines SLA goal and deadline timings",
+        }
+        branch_detail = "\n".join(
+            f"- `{b}`: {branch_descriptions.get(b, 'handles ' + b + ' logic')}"
+            for b in purpose_branches
+        )
+        pairs.append(make_message(
+            f"What purpose branches does this Case Type rule handle?\n\n{code_block}",
+            f"This Case Type rule in **{ns_label}** handles the following purposes:\n"
+            + branch_detail,
+        ))
+
+    # ── Q7: Work object ────────────────────────────────────────────────────────
     if work_object:
         pairs.append(make_message(
             f"Which case type or work object does this Pega rule belong to?\n\n{code_block}",
@@ -267,7 +327,7 @@ def generate_qa_pairs(
             "qualified by the class hierarchy they belong to.",
         ))
 
-    # ── Q6: Summary ────────────────────────────────────────────────────────────
+    # ── Q8: Summary (code-grounded) ───────────────────────────────────────────
     summary_parts = [f"This is {rt_desc} in the **{ns_label}** Pega application."]
     if class_name:
         summary_parts.append(f"The generated Java class is `{class_name}`.")
@@ -275,90 +335,17 @@ def generate_qa_pairs(
         summary_parts.append(f"It extends `{base_class}`.")
     if ruleset_name:
         summary_parts.append(f"The ruleset is **{ruleset_name}**.")
-    if purpose_str:
-        summary_parts.append(f"It handles the following purposes: {purpose_str}.")
+    if purpose_branches:
+        summary_parts.append(f"It handles these purposes: {', '.join(purpose_branches)}.")
     if work_object:
         summary_parts.append(f"It applies to the **{work_object}** work object class.")
+    if methods:
+        summary_parts.append(f"Key methods: {', '.join(f'`{m}()`' for m in methods[:5])}.")
+    if properties:
+        summary_parts.append(f"Key properties accessed: {', '.join(f'`{p}`' for p in properties[:5])}.")
     pairs.append(make_message(
         f"Summarize what this Pega rule file does.\n\n{code_block}",
         " ".join(summary_parts),
-    ))
-
-    # ── Q7: How to enhance / extend ────────────────────────────────────────────
-    enhance_map = {
-        "Rule_Obj_CaseType": (
-            f"To enhance this Case Type rule in the **{ns_label}** application, you could:\n"
-            "1. Add a new stage by defining a new `STAGE_*` purpose branch in the `perform()` method\n"
-            "2. Add SLA/goal/deadline logic by handling the `GETDEADLINES` purpose\n"
-            "3. Add optional flows by populating the `ADHOCFLOWS` list\n"
-            "4. Add new flow call parameters in `GETFLOWCALLPARAMS`"
-        ),
-        "Rule_Obj_Flow": (
-            f"To enhance this Flow rule in the **{ns_label}** application, you could:\n"
-            "1. Add a new flow action step by inserting a new assignment/flow action connector\n"
-            "2. Add a decision shape to conditionally route cases to different paths\n"
-            "3. Add a subprocess call to reuse logic from another flow\n"
-            "4. Add an SLA to the flow to enforce time-based routing"
-        ),
-        "Rule_HTML_Section": (
-            f"To enhance this HTML Section rule in the **{ns_label}** application, you could:\n"
-            "1. Add new UI fields by including additional property references\n"
-            "2. Add conditional visibility using when rules on field/section visibility\n"
-            "3. Add a repeating grid/table for list-type data\n"
-            "4. Add client-side validation using Pega validate rules"
-        ),
-        "Rule_HTML_Harness": (
-            f"To enhance this Harness rule in the **{ns_label}** application, you could:\n"
-            "1. Add new sections by embedding additional Rule_HTML_Section references\n"
-            "2. Add a navigation tab for multi-step harness layouts\n"
-            "3. Add dynamic layouts that show/hide sections based on case status\n"
-            "4. Add breadcrumb navigation for better UX"
-        ),
-        "Rule_Obj_Activity": (
-            f"To enhance this Activity rule in the **{ns_label}** application, you could:\n"
-            "1. Add error handling with try/catch blocks and `putMessages` for user feedback\n"
-            "2. Add additional steps to call external REST/SOAP services\n"
-            "3. Add clipboard page operations to manipulate case data\n"
-            "4. Add commit/rollback logic for transactional data changes"
-        ),
-        "Rule_Obj_Report_Definition": (
-            f"To enhance this Report Definition in the **{ns_label}** application, you could:\n"
-            "1. Add additional columns to display more case properties\n"
-            "2. Add filter conditions to narrow down results\n"
-            "3. Add sorting by a date or status field\n"
-            "4. Add aggregate functions (COUNT, SUM) for summary reports"
-        ),
-    }
-    enhancement = enhance_map.get(rule_type,
-        f"To enhance this `{rule_type}` rule in the **{ns_label}** application, consider:\n"
-        "1. Reviewing the rule for opportunities to add error handling\n"
-        "2. Adding logging for better traceability\n"
-        "3. Refactoring repeated logic into shared utility rules\n"
-        "4. Adding unit test cases to validate rule behaviour"
-    )
-    pairs.append(make_message(
-        f"How would you enhance or extend this Pega rule?\n\n{code_block}",
-        enhancement,
-    ))
-
-    # ── Q8: How to create a similar rule ──────────────────────────────────────
-    create_map = {
-        "Rule_Obj_CaseType": "To create a similar Case Type rule in Pega: open App Studio → Case Types → New, define stages and steps, configure starting flows, and set SLAs.",
-        "Rule_Obj_Flow": "To create a similar Flow rule: open Dev Studio → Records → Process → Flow → New, draw shapes (assignments, decisions, subprocesses), connect with connectors, and save.",
-        "Rule_HTML_Section": "To create a similar Section rule: open Dev Studio → Records → User Interface → Section → New, add fields using the UI designer or directly edit the HTML/XML.",
-        "Rule_HTML_Harness": "To create a similar Harness rule: open Dev Studio → Records → User Interface → Harness → New, embed sections and configure the layout.",
-        "Rule_Obj_Activity": "To create a similar Activity rule: open Dev Studio → Records → Technical → Activity → New, add steps selecting methods like Property-Set, Call, or Obj-Save.",
-        "Rule_Obj_Report_Definition": "To create a similar Report Definition: open Dev Studio → Records → Intelligence → Report Definition → New, select the class, add columns and filters.",
-        "Rule_PortalSkin": "To create a similar Portal Skin: open Dev Studio → Records → User Interface → Portal Skin → New, define CSS variables and upload theme assets.",
-    }
-    how_to_create = create_map.get(rule_type,
-        f"To create a similar `{rule_type}` rule in Pega: open Dev Studio → Records, "
-        f"navigate to the appropriate rule type category, click New, fill in the class "
-        f"(`{work_object or 'Work-'}`) and ruleset (`{ruleset_name or namespace}`), and configure the rule."
-    )
-    pairs.append(make_message(
-        f"How would you create a new rule similar to this one in Pega?\n\n{code_block}",
-        how_to_create,
     ))
 
     # ── Q9: Filename explanation ───────────────────────────────────────────────
@@ -368,8 +355,8 @@ def generate_qa_pairs(
         f"- **Rule type**: `{rule_type}` — indicates this is {rt_desc}\n"
         f"- **Namespace**: `{namespace}` — the application ruleset (`{ns_label}`)\n"
         + (f"- **Work object**: `{work_object}` — the case/work object class this rule applies to\n" if work_object else "")
-        + f"- **Timestamp**: the suffix (e.g. `_20260221T064320_702_GMT`) is the rule version/checkin timestamp\n"
-        f"- **Action/Stream suffix**: `_Action_` = the rule's action/execution form; `_Stream_` = the HTML stream form"
+        + "- **Timestamp**: the suffix (e.g. `_20260221T064320_702_GMT`) is the rule version/checkin timestamp\n"
+        "- **Action/Stream suffix**: `_Action_` = the rule's execution form; `_Stream_` = the HTML stream form"
     ))
 
     # ── Q10: Relationship to other rules ──────────────────────────────────────
@@ -415,28 +402,37 @@ def generate_qa_pairs(
 
 
 def make_raw_file_example(path: pathlib.Path) -> dict | None:
-    """
-    Wrap the full .java file content in a chat message so the model
-    memorises the actual source code (code-in-context training).
-
-    The assistant response is a short acknowledgement that names the rule
-    type and namespace so the model links file content to metadata.
-    """
     filename = path.name
     try:
         source = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return None
 
-    # Truncate very large files to 200 lines to stay within token budget
-    lines = source.splitlines()
-    if len(lines) > 200:
-        source = "\n".join(lines[:200]) + "\n// ... (truncated)"
-
     rule_type = detect_rule_type(filename)
     namespace = detect_namespace(filename)
     ns_label = NAMESPACE_MAP.get(namespace, namespace)
     rt_desc = RULE_TYPE_DESCRIPTIONS.get(rule_type, f"a Pega rule of type {rule_type}")
+
+    # Apply smart per-rule-type line limit
+    max_lines = RULE_TYPE_MAX_LINES.get(rule_type, DEFAULT_MAX_LINES)
+    lines = source.splitlines()
+    if len(lines) > max_lines:
+        source = "\n".join(lines[:max_lines]) + f"\n// ... (truncated at {max_lines} lines)"
+
+    # Extract grounded info for richer acknowledgement
+    methods = extract_methods(source)
+    properties = extract_properties(source)
+
+    ack = (
+        f"I have read and understood this Pega rule file: `{filename}`.\n\n"
+        f"- **Rule type**: {rt_desc}\n"
+        f"- **Application**: {ns_label} (`{namespace}`)\n"
+    )
+    if methods:
+        ack += f"- **Methods**: {', '.join(f'`{m}()`' for m in methods[:8])}\n"
+    if properties:
+        ack += f"- **Properties accessed**: {', '.join(f'`{p}`' for p in properties[:8])}\n"
+    ack += "I have memorised the source code and can answer questions about it."
 
     return {
         "messages": [
@@ -444,128 +440,99 @@ def make_raw_file_example(path: pathlib.Path) -> dict | None:
             {
                 "role": "user",
                 "content": (
-                    f"Here is the full source of a Pega rule file. "
+                    f"Here is the source of a Pega rule file. "
                     f"Study and remember its contents.\n\n"
                     f"**Filename:** `{filename}`\n\n"
                     f"```java\n{source}\n```"
                 ),
             },
-            {
-                "role": "assistant",
-                "content": (
-                    f"I have read and understood this Pega rule file: `{filename}`.\n\n"
-                    f"- **Rule type**: {rt_desc}\n"
-                    f"- **Application**: {ns_label} (`{namespace}`)\n"
-                    f"I have memorised the full source code and can answer questions about it."
-                ),
-            },
+            {"role": "assistant", "content": ack},
         ]
     }
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ── Negative examples (anti-hallucination) ────────────────────────────────────
 
 
-def process_file(path: pathlib.Path) -> list[dict]:
-    filename = path.name
-    try:
-        source = path.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        print(f"  [WARN] could not read {filename}: {e}")
-        return []
+def make_negative_examples(known_rule_names: list[str], known_namespaces: list[str]) -> list[dict]:
+    """
+    Generate examples where the model should say it doesn't know,
+    to reduce hallucination of non-existent rules.
+    """
+    negatives = []
 
-    lines = source.splitlines()
-    rule_type = detect_rule_type(filename)
-    namespace = detect_namespace(filename)
-    class_name, base_class = extract_class_info(source)
-    purpose_str = extract_purpose(source)
-    ruleset_name = extract_ruleset_name(source)
-    snippet = meaningful_snippet(lines, max_lines=80)
+    # Fake rule names that don't exist
+    fake_rules = [
+        "Rule_Obj_CaseType_LTM_Enrollment_Work_Enrollment_AdvancedStage",
+        "Rule_Obj_Flow_OOD4NM_Loan_Work_Loan_ApprovalFlow",
+        "Rule_Obj_Activity_OFON2J_ProcessO_Work_Onboarding_ValidateKYC",
+        "Rule_HTML_Section_LTM_Onboarding_Work_Onboarding_DocumentUpload",
+        "Rule_Obj_FlowAction_OLFHF9_Onboaring_Work_Onboarding_ReviewDetails",
+        "Rule_Obj_Model_OOD4NM_Loan_Work_Loan_CreditScoreDefaults",
+        "Rule_Obj_Report_Definition_LTM_BFS_Work_Enrollment_AuditReport",
+        "Rule_Obj_Activity_LTM_Enrollment_Work_Enrollment_SendNotification",
+    ]
 
-    if not snippet.strip():
-        snippet = "\n".join(lines[:80])
-
-    return generate_qa_pairs(
-        filename=filename,
-        rule_type=rule_type,
-        namespace=namespace,
-        class_name=class_name,
-        base_class=base_class,
-        purpose_str=purpose_str,
-        ruleset_name=ruleset_name,
-        snippet=snippet,
+    not_found_response = (
+        "I don't have that rule in my training data. "
+        "I was trained on the Pega rule files in this specific repository and that rule name "
+        "does not appear in any of them. Please verify the exact rule name or check if it "
+        "exists in a different ruleset layer."
     )
 
+    for fake in fake_rules:
+        negatives.append(make_message(
+            f"What does the rule `{fake}` do?",
+            not_found_response,
+        ))
+        negatives.append(make_message(
+            f"Show me the source code for `{fake}`.",
+            not_found_response,
+        ))
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--include-raw-files",
-        action="store_true",
-        help="Also add every .java file as a code-in-context 'study this file' example",
-    )
-    parser.add_argument(
-        "--all-files",
-        action="store_true",
-        help="Include ALL .java files from the repo (not just known namespaces) as raw code-in-context examples",
-    )
-    args = parser.parse_args()
+    # Questions about non-existent namespaces
+    fake_namespaces = [
+        "LTM_KYC", "OOD4NM_Mortgage", "OLFHF9_Claims", "OFON2J_Collections"
+    ]
+    for ns in fake_namespaces:
+        negatives.append(make_message(
+            f"What rules exist in the `{ns}` namespace?",
+            f"I don't have any rules from the `{ns}` namespace in my training data. "
+            f"The namespaces I was trained on are: "
+            + ", ".join(f"`{k}`" for k in known_namespaces)
+            + ". I cannot provide information about namespaces outside this set.",
+        ))
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Questions about methods/properties that don't exist
+    negatives.append(make_message(
+        "What does the `validateCreditScore()` method do in the Loan case type?",
+        "I don't have a `validateCreditScore()` method in any of the Loan case type rules "
+        "in my training data. The OOD4NM Loan case type rules I was trained on do not contain "
+        "this method. Please check if this method exists in a different rule or a newer version "
+        "of the codebase.",
+    ))
+    negatives.append(make_message(
+        "Which rule handles the `STAGE_Approval` purpose in the Enrollment case type?",
+        "I don't have a `STAGE_Approval` purpose branch in any Enrollment case type rule "
+        "in my training data. The purpose branches I have seen in the Enrollment case type are "
+        "limited to the standard ones like `CREATECASE`, `GETSTARTINGFLOWS`, and `ADHOCFLOWS`. "
+        "There is no approval stage defined in the rules I was trained on.",
+    ))
+    negatives.append(make_message(
+        "Does the onboarding flow have a background check step?",
+        "I don't have any background check step or related rule in my training data for the "
+        "onboarding flows. The onboarding flows I was trained on include CreateForm, Stage1, "
+        "CollectInformation, and Resolution flows — none of which contain a background check step.",
+    ))
 
-    # Only keep files that belong to known project namespaces for Q&A pairs
-    known_ns = list(NAMESPACE_MAP.keys())
-    seen_names = set()
-    qa_files = []
-    for f in sorted(REPO_ROOT.glob("**/*.java")):
-        # Skip ms-phi3-finetune directory (our own code)
-        if "ms-phi3-finetune" in str(f):
-            continue
-        if f.name not in seen_names and any(ns in f.name for ns in known_ns):
-            seen_names.add(f.name)
-            qa_files.append(f)
+    return negatives
 
-    print(f"Found {len(qa_files)} project .java files (filtered to known namespaces) for Q&A")
 
-    all_pairs: list[dict] = []
-    for path in qa_files:
-        pairs = process_file(path)
-        all_pairs.extend(pairs)
-        print(f"  {path.name}: {len(pairs)} Q&A pairs")
+# ── Application-level Q&A ─────────────────────────────────────────────────────
 
-    # ── Raw file code-in-context examples (known namespace files) ──────────────
-    if args.include_raw_files:
-        raw_examples = []
-        for path in qa_files:
-            ex = make_raw_file_example(path)
-            if ex:
-                raw_examples.append(ex)
-        all_pairs.extend(raw_examples)
-        print(f"\n  + {len(raw_examples)} raw file code-in-context examples added (known namespaces)")
 
-    # ── All repo files as raw code-in-context examples ─────────────────────────
-    if args.all_files:
-        all_java = []
-        seen_all = set()
-        for f in sorted(REPO_ROOT.glob("**/*.java")):
-            if "ms-phi3-finetune" in str(f):
-                continue
-            if f.name not in seen_all:
-                seen_all.add(f.name)
-                all_java.append(f)
-
-        # Add files not already included in known namespace set
-        extra_files = [f for f in all_java if f not in qa_files]
-        raw_all = []
-        for path in all_java:
-            ex = make_raw_file_example(path)
-            if ex:
-                raw_all.append(ex)
-        all_pairs.extend(raw_all)
-        print(f"\n  + {len(raw_all)} total repo file code-in-context examples added ({len(extra_files)} extra beyond known namespaces)")
-
-    # ── Application-level Q&A (repo-wide knowledge) ────────────────────────────
-    app_qa = [
+def make_app_level_qa() -> list[dict]:
+    return [
         make_message(
             "What Pega applications are in this repository?",
             "This repository contains the following Pega applications:\n"
@@ -611,16 +578,6 @@ def main():
             "Each harness/section has both `_Action_` (execution) and `_Stream_` (HTML output) variants."
         ),
         make_message(
-            "What portal skins are defined in this Pega codebase?",
-            "The following Portal Skin rules (`Rule_PortalSkin`) are defined:\n"
-            "- **Enrollment** — styling for the LTM Enrollment portal\n"
-            "- **Onboarding** — styling for the Onboarding portals\n"
-            "- **Onboaring** — alternate skin for OLFHF9 onboarding (note the intentional typo)\n"
-            "- **Loan** — styling for the OOD4NM Loan portal\n"
-            "- **ProcessO** — styling for the OFON2J ProcessO portal\n\n"
-            "Portal Skins define CSS variables and visual themes applied to the operator portal."
-        ),
-        make_message(
             "How is the onboarding process structured across namespaces in this codebase?",
             "The onboarding process is implemented across multiple namespaces with increasing complexity:\n\n"
             "1. **LTM_Onboarding** — basic onboarding with a single CreateForm flow\n"
@@ -631,12 +588,14 @@ def main():
             "Each namespace builds on the same pattern: CaseType → Flow → FlowAction → Section/Harness."
         ),
         make_message(
-            "What report definitions are available in this Pega codebase?",
-            "Each application has three standard Report Definitions (`Rule_Obj_Report_Definition`):\n"
-            "1. **DataTableEditorReport** — used by the Pega Data Table editor UI\n"
-            "2. **pyDefaultReport** — the default work list report showing open cases\n"
-            "3. **pyDefaultSummaryReport** — a summary/aggregate report for case counts\n\n"
-            "These are defined for all work object classes: Enrollment, Onboarding, OnboaringProcess, and Loan."
+            "What is the difference between LTM_Enrollment and LTM_BFS in this codebase?",
+            "**LTM_Enrollment** and **LTM_BFS** are closely related:\n\n"
+            "- Both contain identical rule sets (same CaseType, Flow, Report Definitions, Harnesses, Sections)\n"
+            "- **LTM_BFS** appears to be the Back-office Financial Services layer that mirrors LTM_Enrollment\n"
+            "- This is a common Pega pattern: a base application (LTM_BFS) provides the core rules, "
+            "and a derived application (LTM_Enrollment) extends or overrides them\n"
+            "- The ruleset stack allows LTM_Enrollment rules to override LTM_BFS rules at runtime\n"
+            "- Both share the same work object class: `Work-Enrollment`"
         ),
         make_message(
             "How would you add a new stage to the OLFHF9 Onboarding case type?",
@@ -649,31 +608,109 @@ def main():
             "6. Create any required FlowAction and Section rules for the new stage's UI"
         ),
         make_message(
-            "How does the Loan application differ from the Onboarding applications in this codebase?",
-            "The **OOD4NM Loan** application differs from the Onboarding applications in several ways:\n\n"
-            "- **Purpose**: Loan manages loan application cases; Onboarding manages customer onboarding\n"
-            "- **Simplicity**: Loan has only a CreateForm flow; Onboarding apps have multiple flows (Stage1, Resolution, CollectInformation)\n"
-            "- **Sub-cases**: OLFHF9 Onboarding has a sub-case (OnboaringProcess); Loan does not\n"
-            "- **Data capture**: OFON2J has a dedicated FlowAction (CollectInformation) and Model rule; Loan relies on the basic CreateForm\n"
-            "- **Namespace**: Loan uses `OOD4NM_Loan`; Onboarding uses `LTM_Onboarding`, `OLFHF9_Onboaring`, or `OFON2J_ProcessO`"
-        ),
-        make_message(
-            "What is the difference between LTM_Enrollment and LTM_BFS in this codebase?",
-            "**LTM_Enrollment** and **LTM_BFS** are closely related:\n\n"
-            "- Both contain identical rule sets (same CaseType, Flow, Report Definitions, Harnesses, Sections)\n"
-            "- **LTM_BFS** appears to be the Back-office Financial Services layer that mirrors LTM_Enrollment\n"
-            "- This is a common Pega pattern: a base application (LTM_BFS) provides the core rules, "
-            "and a derived application (LTM_Enrollment) extends or overrides them\n"
-            "- The ruleset stack allows LTM_Enrollment rules to override LTM_BFS rules at runtime\n"
-            "- Both share the same work object class: `Work-Enrollment`"
+            "What report definitions are available in this Pega codebase?",
+            "Each application has three standard Report Definitions (`Rule_Obj_Report_Definition`):\n"
+            "1. **DataTableEditorReport** — used by the Pega Data Table editor UI\n"
+            "2. **pyDefaultReport** — the default work list report showing open cases\n"
+            "3. **pyDefaultSummaryReport** — a summary/aggregate report for case counts\n\n"
+            "These are defined for all work object classes: Enrollment, Onboarding, OnboaringProcess, and Loan."
         ),
     ]
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+
+def process_file(path: pathlib.Path) -> list[dict]:
+    filename = path.name
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        print(f"  [WARN] could not read {filename}: {e}")
+        return []
+
+    lines = source.splitlines()
+    rule_type = detect_rule_type(filename)
+    namespace = detect_namespace(filename)
+    class_name, base_class = extract_class_info(source)
+    purpose_str = extract_purpose(source)
+    ruleset_name = extract_ruleset_name(source)
+
+    max_snippet = SNIPPET_MAX_LINES.get(rule_type, DEFAULT_SNIPPET_LINES)
+    snippet = meaningful_snippet(lines, max_lines=max_snippet)
+    if not snippet.strip():
+        snippet = "\n".join(lines[:max_snippet])
+
+    return generate_qa_pairs(
+        filename=filename,
+        rule_type=rule_type,
+        namespace=namespace,
+        class_name=class_name,
+        base_class=base_class,
+        purpose_str=purpose_str,
+        ruleset_name=ruleset_name,
+        snippet=snippet,
+        source=source,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--no-raw-files",
+        action="store_true",
+        help="Skip raw file code-in-context examples (included by default)",
+    )
+    args = parser.parse_args()
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    known_ns = list(NAMESPACE_MAP.keys())
+    seen_names = set()
+    qa_files = []
+    for f in sorted(REPO_ROOT.glob("**/*.java")):
+        if "codellama" in str(f) or "ms-phi3-finetune" in str(f):
+            continue
+        if f.name not in seen_names and any(ns in f.name for ns in known_ns):
+            seen_names.add(f.name)
+            qa_files.append(f)
+
+    print(f"Found {len(qa_files)} project .java files for Q&A")
+
+    all_pairs: list[dict] = []
+
+    # ── Q&A pairs ──────────────────────────────────────────────────────────────
+    for path in qa_files:
+        pairs = process_file(path)
+        all_pairs.extend(pairs)
+        print(f"  {path.name}: {len(pairs)} Q&A pairs")
+
+    # ── Raw file code-in-context examples (default on) ─────────────────────────
+    if not args.no_raw_files:
+        raw_examples = []
+        for path in qa_files:
+            ex = make_raw_file_example(path)
+            if ex:
+                raw_examples.append(ex)
+        all_pairs.extend(raw_examples)
+        print(f"\n  + {len(raw_examples)} raw file code-in-context examples added")
+
+    # ── Application-level Q&A ──────────────────────────────────────────────────
+    app_qa = make_app_level_qa()
     all_pairs.extend(app_qa)
-    print(f"\n  + {len(app_qa)} application-level Q&A pairs added")
+    print(f"  + {len(app_qa)} application-level Q&A pairs added")
+
+    # ── Negative examples (anti-hallucination) ─────────────────────────────────
+    negatives = make_negative_examples(
+        known_rule_names=[f.stem for f in qa_files],
+        known_namespaces=known_ns,
+    )
+    all_pairs.extend(negatives)
+    print(f"  + {len(negatives)} negative (anti-hallucination) examples added")
 
     print(f"\nTotal Q&A pairs: {len(all_pairs)}")
 
-    # Train/test split (90/10) — done manually, no datasets library needed
+    # ── Train/test split (90/10) ───────────────────────────────────────────────
     random.seed(42)
     shuffled = all_pairs[:]
     random.shuffle(shuffled)
@@ -692,7 +729,6 @@ def main():
         for item in test_split:
             f.write(json.dumps(item) + "\n")
 
-    # Also write combined file
     with open(OUTPUT_FILE, "w") as f:
         for item in all_pairs:
             f.write(json.dumps(item) + "\n")
