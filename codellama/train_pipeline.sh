@@ -238,6 +238,7 @@ if [ -z "$HF_REPO" ]; then
     echo "    huggingface-cli login"
     echo "    huggingface-cli upload <your-hf-username>/<repo-name> $MERGED_DIR/"
 else
+    pip install -q huggingface_hub
     if [ -z "$HF_TOKEN" ]; then
         echo "  WARNING: HF_TOKEN not set — trying without token (will fail for private repos)."
     else
