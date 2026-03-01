@@ -143,14 +143,14 @@ for ex in examples:
     if "don't have that" in asst or "not have that" in asst or "don't have any" in asst:
         neg_count += 1
 
-    # Raw file examples
-    if "Study and remember" in user:
+    # Raw file examples (support both old and new phrasing)
+    if "Study and remember" in user or "Study its contents" in user:
         raw_count += 1
 
     # Code-grounded: assistant references real backtick identifiers like `methodName()`
     if "`" in asst and ("()" in asst or "tools." in asst):
         grounded_count += 1
-    elif "Study and remember" not in user and "don't have" not in asst:
+    elif "Study" not in user and "don't have" not in asst:
         template_only += 1
 
 print(f"  Total examples          : {total}")
@@ -163,7 +163,7 @@ print()
 # Sample a grounded Q&A
 grounded = [e for e in examples
             if "`" in e["messages"][2]["content"] and "()" in e["messages"][2]["content"]
-            and "Study and remember" not in e["messages"][1]["content"]]
+            and "Study" not in e["messages"][1]["content"]]
 if grounded:
     sample = grounded[0]["messages"]
     print("  Sample grounded Q&A:")
