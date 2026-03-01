@@ -436,17 +436,17 @@
             <div class="sidebar-label" style="margin-top: 12px;">Training Stats</div>
             <div style="padding: 8px 12px; font-size: 13px; color: var(--text-secondary); line-height: 1.6;">
                 📄 3,489 rule files<br>
-                📊 ~1,150+ Q&amp;A pairs<br>
-                🔧 LoRA r=32, fp16<br>
+                📊 Code-grounded Q&amp;A pairs<br>
+                🔧 QLoRA r=32, 4-bit<br>
                 🧠 CodeLlama-13B-Instruct<br>
-                ⚙️ LR=1e-4, 5 epochs<br>
-                📈 Loss=0.11, Acc=98.3%
+                ⚙️ LR=1e-4, 3 epochs<br>
+                🛡️ Anti-hallucination training
             </div>
         </div>
         <div class="sidebar-footer">
             <div class="model-badge">
                 <span class="dot"></span>
-                CodeLlama-13B · Epoch 5 · RunPod
+                CodeLlama-13B · Epoch 3 · v2
             </div>
         </div>
     </aside>
@@ -474,7 +474,7 @@
                         </svg>
                     </button>
                 </div>
-                <div class="disclaimer">Running on RunPod RTX 4090 · CodeLlama-13B LoRA fine-tuned on 3,489 Pega rules · Epoch 5</div>
+                <div class="disclaimer">Running on RunPod RTX 6000 Ada · CodeLlama-13B QLoRA fine-tuned on 3,489 Pega rules · Epoch 3 v2</div>
             </div>
         </div>
     </main>
