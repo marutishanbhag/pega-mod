@@ -46,7 +46,7 @@ echo ""
 echo "[2/5] Installing dependencies..."
 pip install -q \
     "numpy<2.0" \
-    "tokenizers==0.22.0" \
+    "tokenizers>=0.19,<0.20" \
     "accelerate>=0.34.0" \
     "transformers==4.45.2" \
     "lm-format-enforcer==0.10.6" \
