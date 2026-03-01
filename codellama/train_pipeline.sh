@@ -3,6 +3,7 @@
 # train_pipeline.sh
 #
 # End-to-end training pipeline for Pega CodeLlama fine-tune on RunPod.
+# Automatically runs inside a tmux session so terminal disconnects are safe.
 #
 # Usage:
 #   bash train_pipeline.sh [HF_TOKEN] [HF_REPO]
@@ -11,6 +12,9 @@
 #   export HF_TOKEN=hf_xxx
 #   export HF_REPO=marutishanbhag/pega-codellama-13b-v2
 #   bash train_pipeline.sh
+#
+# If terminal disconnects, reattach with:
+#   tmux attach -t pega-training
 #
 # Steps:
 #   1. Clone repo and checkout feature/codellama
@@ -23,6 +27,27 @@
 # =============================================================================
 
 set -e
+
+# ── Auto-relaunch inside tmux if not already inside ───────────────────────────
+TMUX_SESSION="pega-training"
+if [ -z "$TMUX" ]; then
+    echo "Not inside tmux — launching session '$TMUX_SESSION'..."
+    echo "  To reattach after disconnect: tmux attach -t $TMUX_SESSION"
+    echo ""
+
+    # Install tmux if missing
+    if ! command -v tmux &> /dev/null; then
+        echo "  tmux not found — installing..."
+        apt-get install -y tmux -q
+    fi
+
+    # Kill any previous session with the same name
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    # Re-launch this script inside tmux, passing env vars through
+    exec tmux new-session -s "$TMUX_SESSION" \
+        "HF_TOKEN='$HF_TOKEN' HF_REPO='$HF_REPO' bash '$0' '$@'; echo ''; echo 'Pipeline finished. Press any key to exit.'; read"
+fi
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
