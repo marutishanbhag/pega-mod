@@ -47,9 +47,9 @@ WORKDIR /workspace
 # Install only inference dependencies (no training libs)
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
-        "vllm==0.4.3" \
+        "vllm==0.6.3" \
         "huggingface_hub>=0.23.0" \
-        "transformers==4.44.0" \
+        "tokenizers==0.22.0" \
         httpx \
         uvicorn \
         fastapi

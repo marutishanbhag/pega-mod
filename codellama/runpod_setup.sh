@@ -39,10 +39,14 @@ echo "  Model OK: $(du -sh "$MODEL_PATH" | cut -f1)"
 echo ""
 echo "[2/4] Installing chat UI dependencies..."
 export PYTHONPATH=/workspace/pip_packages:$PYTHONPATH
-# Pin vllm + transformers to compatible versions (fixes tokenizer all_special_tokens_extended error)
+# Fix tokenizers at system level first (pip_packages tokenizers gets shadowed by system version)
+pip install -q "tokenizers==0.22.0"
+
+# Install vLLM and UI deps into pip_packages
+rm -rf /workspace/pip_packages
 pip install --target=/workspace/pip_packages -q \
     gradio httpx uvicorn fastapi \
-    "transformers==4.44.0" "vllm==0.4.3"
+    "vllm==0.6.3"
 echo "  Done."
 
 # ── Download chat UI scripts ───────────────────────────────────────────────────
