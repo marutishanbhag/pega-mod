@@ -28,23 +28,13 @@
 
 set -e
 
-# ── Auto-relaunch inside tmux if not already inside ───────────────────────────
+# ── Auto-relaunch inside tmux if available and running interactively ──────────
 TMUX_SESSION="pega-training"
-if [ -z "$TMUX" ]; then
-    echo "Not inside tmux — launching session '$TMUX_SESSION'..."
+if [ -z "$TMUX" ] && [ -t 1 ] && command -v tmux &> /dev/null; then
+    echo "Launching inside tmux session '$TMUX_SESSION'..."
     echo "  To reattach after disconnect: tmux attach -t $TMUX_SESSION"
     echo ""
-
-    # Install tmux if missing
-    if ! command -v tmux &> /dev/null; then
-        echo "  tmux not found — installing..."
-        apt-get update -q && apt-get install -y tmux -q
-    fi
-
-    # Kill any previous session with the same name
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-
-    # Re-launch this script inside tmux, passing env vars through
     exec tmux new-session -s "$TMUX_SESSION" \
         "HF_TOKEN='$HF_TOKEN' HF_REPO='$HF_REPO' bash '$0' '$@'; echo ''; echo 'Pipeline finished. Press any key to exit.'; read"
 fi
