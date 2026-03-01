@@ -61,6 +61,22 @@ curl -fsSL "$GITHUB_RAW/chat_ui.py"   -o "$SCRIPTS_DIR/chat_ui.py"
 curl -fsSL "$GITHUB_RAW/chat_ui.html" -o "$SCRIPTS_DIR/chat_ui.html"
 echo "  Done."
 
+# ── Fix tokenizer_config.json if needed ───────────────────────────────────────
+TOK_CFG="$MODEL_PATH/tokenizer_config.json"
+if [ -f "$TOK_CFG" ]; then
+    python3 -c "
+import json
+path='$TOK_CFG'
+d=json.load(open(path))
+if d.get('tokenizer_class') != 'CodeLlamaTokenizer':
+    d['tokenizer_class']='CodeLlamaTokenizer'
+    json.dump(d, open(path,'w'), indent=2)
+    print('  Fixed tokenizer_class -> CodeLlamaTokenizer')
+else:
+    print('  tokenizer_class OK:', d['tokenizer_class'])
+"
+fi
+
 # ── Start vLLM in background ───────────────────────────────────────────────────
 echo ""
 echo "[4/4] Starting vLLM..."

@@ -81,6 +81,16 @@ def main():
     model.save_pretrained(args.output_dir, safe_serialization=True)
     tokenizer.save_pretrained(args.output_dir)
 
+    # ── Fix tokenizer_config.json (PEFT sometimes writes 'TokenizersBackend') ──
+    import json
+    tok_cfg_path = pathlib.Path(args.output_dir) / "tokenizer_config.json"
+    if tok_cfg_path.exists():
+        tok_cfg = json.loads(tok_cfg_path.read_text())
+        if tok_cfg.get("tokenizer_class") != "CodeLlamaTokenizer":
+            tok_cfg["tokenizer_class"] = "CodeLlamaTokenizer"
+            tok_cfg_path.write_text(json.dumps(tok_cfg, indent=2))
+            print("  Fixed tokenizer_class -> CodeLlamaTokenizer")
+
     print("\nMerge complete.")
     print(f"  Merged model saved to: {args.output_dir}")
     print(
