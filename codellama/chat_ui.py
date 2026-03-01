@@ -84,6 +84,8 @@ async def chat(request: Request):
         "messages": messages,
         "max_tokens": 512,
         "temperature": 0.1,
+        "repetition_penalty": 1.15,
+        "stop": ["</s>", "[INST]", "<<SYS>>"],
     }
 
     try:
