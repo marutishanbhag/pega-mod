@@ -518,6 +518,10 @@ def make_raw_file_examples(path: pathlib.Path, max_seq_length: int = 4096) -> li
         part_label = f" (part {idx} of {total})"
         note = f"// ... continues in part {idx + 1}" if idx < total else "// end of file"
         ex = _example(chunk, part_label, note)
+        # If chunk is over budget, trim lines from the end until it fits
+        while approx_tokens(json.dumps(ex)) > max_seq_length and len(chunk) > 50:
+            chunk = chunk[:-20]
+            ex = _example(chunk, part_label, note)
         if approx_tokens(json.dumps(ex)) <= max_seq_length:
             examples.append(ex)
     return examples
