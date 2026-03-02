@@ -82,10 +82,10 @@ SNIPPET_MAX_LINES = {
     "Rule_Obj_Report_Definition": 200, "Rule_Declare_Index": 200, "ra_model": 100,
 }
 RAW_MAX_LINES = {
-    "Rule_HTML_Section": 300, "Rule_HTML_Harness": 300, "sh_stream": 200,
-    "Rule_Obj_Flow": 600, "Rule_Obj_CaseType": 800, "Rule_Obj_FlowAction": 600,
-    "Rule_Obj_Activity": 800, "Rule_Obj_Model": 600, "Rule_PortalSkin": 300,
-    "Rule_Obj_Report_Definition": 400, "Rule_Declare_Index": 400, "ra_model": 200,
+    "Rule_HTML_Section": 600, "Rule_HTML_Harness": 600, "sh_stream": 400,
+    "Rule_Obj_Flow": 1200, "Rule_Obj_CaseType": 1600, "Rule_Obj_FlowAction": 1200,
+    "Rule_Obj_Activity": 1600, "Rule_Obj_Model": 1200, "Rule_PortalSkin": 600,
+    "Rule_Obj_Report_Definition": 800, "Rule_Declare_Index": 800, "ra_model": 400,
 }
 
 # ── Extraction helpers ────────────────────────────────────────────────────────
@@ -877,7 +877,7 @@ def make_docs_qa() -> list[dict]:
     # ── 3. Raw doc file code-in-context examples ─────────────────────────────
     # Feed the full markdown as a "Study its contents" example so the model
     # can answer arbitrary questions about each document.
-    RAW_DOC_MAX_CHARS = 4000  # ~1000 tokens; keeps total example within 2048 token budget
+    RAW_DOC_MAX_CHARS = 12000  # ~3000 tokens; keeps total example well within 4096 token budget
 
     for doc_path in doc_files:
         try:
@@ -1041,8 +1041,8 @@ def process_file(path: pathlib.Path) -> list[dict]:
 
 def main():
     parser = argparse.ArgumentParser(description="Pega Q&A dataset generator v2")
-    parser.add_argument("--max_seq_length", type=int, default=2048,
-                        help="Max token length; examples exceeding this are dropped")
+    parser.add_argument("--max_seq_length", type=int, default=4096,
+                        help="Max token length; examples exceeding this are dropped (match train.py --max_seq_length)")
     parser.add_argument("--neg_ratio", type=float, default=0.20,
                         help="Target ratio of negative examples (default 20%%)")
     parser.add_argument("--no-raw-files", action="store_true",

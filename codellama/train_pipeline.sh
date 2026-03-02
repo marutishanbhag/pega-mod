@@ -206,9 +206,9 @@ echo ""
 
 python train.py \
     --num_train_epochs 3 \
-    --max_seq_length 512 \
-    --per_device_train_batch_size 4 \
-    --gradient_accumulation_steps 4 \
+    --max_seq_length 4096 \
+    --per_device_train_batch_size 2 \
+    --gradient_accumulation_steps 8 \
     --load_in_4bit \
     --output_dir "$OUTPUT_DIR"
 
