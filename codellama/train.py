@@ -86,11 +86,13 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     # ── Load tokenizer ─────────────────────────────────────────────────────────
+    hf_token = os.environ.get("HF_TOKEN")
     print(f"Loading tokenizer from {args.base_model} ...")
     tokenizer = AutoTokenizer.from_pretrained(
         args.base_model,
         trust_remote_code=True,
         use_fast=True,
+        token=hf_token,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -117,6 +119,7 @@ def main():
         torch_dtype=torch.bfloat16 if use_4bit else torch.float16,
         device_map="auto",
         trust_remote_code=True,
+        token=hf_token,
     )
     model.config.use_cache = False  # required for gradient checkpointing
 
