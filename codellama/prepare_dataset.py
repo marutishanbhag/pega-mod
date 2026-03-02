@@ -833,10 +833,10 @@ def make_docs_qa() -> list[dict]:
     if not DOCS_DIR.exists():
         return pairs
 
-    # Only include docs that contain substantial business content (skip JSON/CSV)
+    # Only include docs that contain substantial business content (skip JSON/CSV and macOS ._* files)
     doc_files = [
         f for f in sorted(DOCS_DIR.glob("*.md"))
-        if f.stat().st_size < 200_000  # skip extremely large files
+        if not f.name.startswith("._") and f.stat().st_size < 200_000
     ]
 
     for doc_path in doc_files:
@@ -873,6 +873,42 @@ def make_docs_qa() -> list[dict]:
                 + "\n\nConfidence: 85%"
             )
             pairs.append(msg(q, a, weight=1.0))
+
+    # ── 3. Raw doc file code-in-context examples ─────────────────────────────
+    # Feed the full markdown as a "Study its contents" example so the model
+    # can answer arbitrary questions about each document.
+    RAW_DOC_MAX_CHARS = 4000  # ~1000 tokens; keeps total example within 2048 token budget
+
+    for doc_path in doc_files:
+        try:
+            text = doc_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+        if len(text) > RAW_DOC_MAX_CHARS:
+            text = text[:RAW_DOC_MAX_CHARS] + f"\n\n... (truncated at {RAW_DOC_MAX_CHARS} chars)"
+
+        # Build a short acknowledgement summarising the document
+        first_heading = ""
+        for line in text.splitlines():
+            if line.startswith("# "):
+                first_heading = line.lstrip("# ").strip()
+                break
+
+        ack = (
+            f"I have studied `{doc_path.name}` — **{first_heading or doc_path.stem}**.\n\n"
+            f"This is a business/technical documentation file for the Pega migration project. "
+            f"I can answer questions about its content including case types, workflows, "
+            f"data models, validation rules, RBAC, and migration recommendations."
+        )
+
+        pairs.append(msg(
+            f"Here is a business documentation file for the Pega migration project. "
+            f"Study its contents.\n\n"
+            f"**Filename:** `{doc_path.name}`\n\n```markdown\n{text}\n```",
+            ack,
+            weight=1.0,
+        ))
 
     return pairs
 
