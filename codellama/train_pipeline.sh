@@ -204,11 +204,13 @@ echo "[4/7] Starting training (3 epochs, 4-bit QLoRA)..."
 echo "  This will take ~1-2 hours on RTX 6000 Ada (8B is faster than 13B)."
 echo ""
 
+python prepare_dataset.py --max_seq_length 16384
+
 python train.py \
     --num_train_epochs 3 \
-    --max_seq_length 4096 \
-    --per_device_train_batch_size 2 \
-    --gradient_accumulation_steps 8 \
+    --max_seq_length 16384 \
+    --per_device_train_batch_size 1 \
+    --gradient_accumulation_steps 16 \
     --load_in_4bit \
     --output_dir "$OUTPUT_DIR"
 

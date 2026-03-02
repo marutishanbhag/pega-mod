@@ -74,11 +74,9 @@ NAMESPACE_MAP = {
     "OFON2J_ProcessO": "OFON2J ProcessO (Onboarding Process)",
 }
 
-# Per-rule-type line limits (fit within context window)
-# SNIPPET_MAX_LINES: used for Q&A pair code blocks (one file → many questions, so keep shorter)
-# RAW_MAX_LINES: used for raw "Study its contents" examples (one file = one example, maximise coverage)
-# At 4096 token budget: ~3700 tokens available for code ≈ 14,800 chars ≈ 250-300 lines @ ~50 chars/line.
-# Set RAW_MAX_LINES to cover full files; the token filter will drop any that still exceed budget.
+# Per-rule-type line limits
+# SNIPPET_MAX_LINES: used for Q&A pair code blocks (one file → many questions, keep concise)
+# RAW_MAX_LINES: set to actual file maximums — chunking handles files that exceed the token budget
 SNIPPET_MAX_LINES = {
     "Rule_HTML_Section": 200, "Rule_HTML_Harness": 200, "sh_stream": 150,
     "Rule_Obj_Flow": 300, "Rule_Obj_CaseType": 350, "Rule_Obj_FlowAction": 300,
@@ -91,6 +89,11 @@ RAW_MAX_LINES = {
     "Rule_Obj_Activity": 250, "Rule_Obj_Model": 200, "Rule_PortalSkin": 760,
     "Rule_Obj_Report_Definition": 170, "Rule_Declare_Index": 170, "ra_model": 65,
 }
+
+# Chunking: files that exceed max_seq_length are split into overlapping windows.
+# CHUNK_LINES: lines per chunk; CHUNK_OVERLAP: lines of overlap between consecutive chunks.
+CHUNK_LINES = 600       # ~15,000 chars ≈ 3,750 tokens of code per chunk
+CHUNK_OVERLAP = 60      # ~10% overlap so chunks share context at boundaries
 
 # ── Extraction helpers ────────────────────────────────────────────────────────
 
@@ -443,11 +446,17 @@ def generate_qa_pairs(
 
 # ── Raw file code-in-context ─────────────────────────────────────────────────
 
-def make_raw_file_example(path: pathlib.Path) -> dict | None:
+def make_raw_file_examples(path: pathlib.Path, max_seq_length: int = 4096) -> list[dict]:
+    """
+    Return one or more training examples for a Java rule file.
+    Files that fit within max_seq_length produce a single example.
+    Files that exceed it are split into overlapping CHUNK_LINES-line windows,
+    each labelled 'part N of M', so all content reaches the model.
+    """
     try:
         source = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
-        return None
+        return []
 
     source = strip_copyright_header(source)
 
@@ -455,36 +464,63 @@ def make_raw_file_example(path: pathlib.Path) -> dict | None:
     rule_type = detect_rule_type(filename)
     namespace = detect_namespace(filename)
 
-    # Skip files with unidentifiable rule type or namespace — teaching "Unknown"
-    # pollutes the model and causes false negatives during inference.
     if rule_type == "Unknown" or namespace == "Unknown":
-        return None
+        return []
 
     ns_label = NAMESPACE_MAP.get(namespace, namespace)
     rt_desc = RULE_TYPE_DESCRIPTIONS.get(rule_type, f"a Pega rule of type {rule_type}")
 
     max_lines = RAW_MAX_LINES.get(rule_type, 400)
-    lines = source.splitlines()
-    if len(lines) > max_lines:
-        source = "\n".join(lines[:max_lines]) + f"\n// ... (truncated at {max_lines} lines)"
+    all_lines = source.splitlines()
+    if len(all_lines) > max_lines:
+        all_lines = all_lines[:max_lines]
 
     methods = extract_methods(source)
     properties = extract_properties(source)
 
-    ack = f"I have analyzed this Pega rule file: `{filename}`.\n\n"
-    ack += f"- **Rule type**: {rt_desc}\n"
-    ack += f"- **Application**: {ns_label} (`{namespace}`)\n"
-    if methods:
-        ack += f"- **Methods**: {', '.join(f'`{m}()`' for m in methods[:8])}\n"
-    if properties:
-        ack += f"- **Properties**: {', '.join(f'`{p}`' for p in properties[:8])}\n"
-    ack += "\nI can answer questions about this rule's structure and behavior."
+    def _ack(part_label: str) -> str:
+        a = f"I have analyzed this Pega rule file{part_label}: `{filename}`.\n\n"
+        a += f"- **Rule type**: {rt_desc}\n"
+        a += f"- **Application**: {ns_label} (`{namespace}`)\n"
+        if methods:
+            a += f"- **Methods**: {', '.join(f'`{m}()`' for m in methods[:8])}\n"
+        if properties:
+            a += f"- **Properties**: {', '.join(f'`{p}`' for p in properties[:8])}\n"
+        a += "\nI can answer questions about this rule's structure and behavior."
+        return a
 
-    return msg(
-        f"Here is a Pega rule file. Study its contents.\n\n"
-        f"**Filename:** `{filename}`\n\n```java\n{source}\n```",
-        ack,
-    )
+    def _example(chunk_lines: list[str], part_label: str, note: str = "") -> dict:
+        chunk_src = "\n".join(chunk_lines)
+        if note:
+            chunk_src += f"\n{note}"
+        return msg(
+            f"Here is a Pega rule file{part_label}. Study its contents.\n\n"
+            f"**Filename:** `{filename}`\n\n```java\n{chunk_src}\n```",
+            _ack(part_label),
+        )
+
+    # Try as a single example first
+    single = _example(all_lines, "")
+    if approx_tokens(json.dumps(single)) <= max_seq_length:
+        return [single]
+
+    # File is too large — split into overlapping chunks
+    step = CHUNK_LINES - CHUNK_OVERLAP
+    chunks = []
+    i = 0
+    while i < len(all_lines):
+        chunks.append(all_lines[i : i + CHUNK_LINES])
+        i += step
+    total = len(chunks)
+
+    examples = []
+    for idx, chunk in enumerate(chunks, 1):
+        part_label = f" (part {idx} of {total})"
+        note = f"// ... continues in part {idx + 1}" if idx < total else "// end of file"
+        ex = _example(chunk, part_label, note)
+        if approx_tokens(json.dumps(ex)) <= max_seq_length:
+            examples.append(ex)
+    return examples
 
 
 # ── Negative / anti-hallucination examples (5× more than v1) ─────────────────
@@ -1100,17 +1136,20 @@ def main():
         pairs = process_file(path)
         val_pairs.extend(pairs)
 
-    # ── Raw file examples ────────────────────────────────────────────────────
+    # ── Raw file examples (with chunking for large files) ────────────────────
     if not args.no_raw_files:
         raw_count = 0
+        chunk_count = 0
         for path in all_java:
             if path.name in val_files:
                 continue  # keep val files truly held out
-            ex = make_raw_file_example(path)
-            if ex:
-                all_pairs.append(ex)
+            exs = make_raw_file_examples(path, max_seq_length=args.max_seq_length)
+            all_pairs.extend(exs)
+            if len(exs) == 1:
                 raw_count += 1
-        print(f"  + {raw_count} raw file code-in-context examples")
+            elif len(exs) > 1:
+                chunk_count += len(exs)
+        print(f"  + {raw_count} raw file examples, {chunk_count} chunked examples (large files)")
 
     # ── App-level Q&A ────────────────────────────────────────────────────────
     app_qa = make_app_level_qa()
