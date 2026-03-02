@@ -75,17 +75,21 @@ NAMESPACE_MAP = {
 }
 
 # Per-rule-type line limits (fit within context window)
+# SNIPPET_MAX_LINES: used for Q&A pair code blocks (one file → many questions, so keep shorter)
+# RAW_MAX_LINES: used for raw "Study its contents" examples (one file = one example, maximise coverage)
+# At 4096 token budget: ~3700 tokens available for code ≈ 14,800 chars ≈ 250-300 lines @ ~50 chars/line.
+# Set RAW_MAX_LINES to cover full files; the token filter will drop any that still exceed budget.
 SNIPPET_MAX_LINES = {
-    "Rule_HTML_Section": 150, "Rule_HTML_Harness": 150, "sh_stream": 100,
-    "Rule_Obj_Flow": 200, "Rule_Obj_CaseType": 250, "Rule_Obj_FlowAction": 200,
-    "Rule_Obj_Activity": 250, "Rule_Obj_Model": 200, "Rule_PortalSkin": 150,
-    "Rule_Obj_Report_Definition": 200, "Rule_Declare_Index": 200, "ra_model": 100,
+    "Rule_HTML_Section": 200, "Rule_HTML_Harness": 200, "sh_stream": 150,
+    "Rule_Obj_Flow": 300, "Rule_Obj_CaseType": 350, "Rule_Obj_FlowAction": 300,
+    "Rule_Obj_Activity": 350, "Rule_Obj_Model": 300, "Rule_PortalSkin": 200,
+    "Rule_Obj_Report_Definition": 250, "Rule_Declare_Index": 250, "ra_model": 150,
 }
 RAW_MAX_LINES = {
-    "Rule_HTML_Section": 600, "Rule_HTML_Harness": 600, "sh_stream": 400,
-    "Rule_Obj_Flow": 1200, "Rule_Obj_CaseType": 1600, "Rule_Obj_FlowAction": 1200,
-    "Rule_Obj_Activity": 1600, "Rule_Obj_Model": 1200, "Rule_PortalSkin": 600,
-    "Rule_Obj_Report_Definition": 800, "Rule_Declare_Index": 800, "ra_model": 400,
+    "Rule_HTML_Section": 5300, "Rule_HTML_Harness": 1300, "sh_stream": 900,
+    "Rule_Obj_Flow": 3700, "Rule_Obj_CaseType": 1800, "Rule_Obj_FlowAction": 450,
+    "Rule_Obj_Activity": 250, "Rule_Obj_Model": 200, "Rule_PortalSkin": 760,
+    "Rule_Obj_Report_Definition": 170, "Rule_Declare_Index": 170, "ra_model": 65,
 }
 
 # ── Extraction helpers ────────────────────────────────────────────────────────
