@@ -42,7 +42,7 @@ fi
 # ── Config ────────────────────────────────────────────────────────────────────
 
 REPO_URL="https://github.com/marutishanbhag/pega-mod.git"
-BRANCH="feature/codellama"
+BRANCH="feature/start_small"
 WORKSPACE="/workspace"
 CODE_DIR="$WORKSPACE/pega-mod"
 PIPELINE_DIR="$CODE_DIR/codellama"
