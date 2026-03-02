@@ -1,89 +1,74 @@
 # Pega CodeLlama — Deployment Guide
 
-## Trained Models (HuggingFace Hub)
+## Current Model (HuggingFace Hub)
 
-| Epoch | HuggingFace Repo | Notes |
+| Model | HuggingFace Repo | Notes |
 |-------|-----------------|-------|
-| Epoch 3 | [marutishanbhag/p_lllama_e3](https://huggingface.co/marutishanbhag/p_lllama_e3) | ~3 epochs, conservative |
-| Epoch 5 | [marutishanbhag/code_llama_p_e5](https://huggingface.co/marutishanbhag/code_llama_p_e5) | 5 epochs, more trained |
+| v2 (latest) | [marutishanbhag/pega-codellama-13b-v2](https://huggingface.co/marutishanbhag/pega-codellama-13b-v2) | Best checkpoint (early stopping), anti-hallucination training |
 
-Both are merged CodeLlama-13B-Instruct models (fp16, ~26GB each), ready for vLLM.
-
----
-
-## Docker Serve Image
-
-A single lightweight inference image (~5GB, no weights baked in) is built via GitHub Actions
-and pushed to Docker Hub as `pega-codellama-serve`.
-
-The model weights are downloaded from HuggingFace Hub at container startup.
-
-### Build
-
-Triggered automatically on push to `feature/codellama` or `main` when these files change:
-- `Dockerfile.serve`
-- `serve_entrypoint.sh`
-- `chat_ui.py` / `chat_ui.html`
-
-Or trigger manually via GitHub Actions → **Build & Push Serve Docker Image** → Run workflow.
-
-### Required GitHub Secrets
-
-| Secret | Description |
-|--------|-------------|
-| `DOCKERHUB_USERNAME` | Docker Hub username |
-| `DOCKERHUB_TOKEN` | Docker Hub access token |
+Merged CodeLlama-13B-Instruct model (bfloat16, ~25GB), ready for vLLM.
 
 ---
 
-## Running the Container
+## RunPod Deployment
 
-### Epoch 3
+### Option A — Full Pipeline (train + merge + serve)
+
+Use this when starting from scratch on a new pod.
+
+**Recommended pod spec:** RTX 6000 Ada (48GB VRAM), 80GB+ RAM, 200GB+ disk
+
 ```bash
-docker run --gpus all \
-  -e HF_TOKEN=hf_xxx \
-  -e HF_MODEL_ID=marutishanbhag/p_lllama_e3 \
-  -p 8000:8000 -p 3000:3000 \
-  your-dockerhub/pega-codellama-serve:latest
+curl -fsSL https://raw.githubusercontent.com/marutishanbhag/pega-mod/feature/codellama/codellama/train_pipeline.sh -o /tmp/train_pipeline.sh && nohup bash /tmp/train_pipeline.sh <HF_TOKEN> <HF_REPO> > /tmp/pipeline.log 2>&1 & echo $!
 ```
 
-### Epoch 5
+Watch progress:
 ```bash
-docker run --gpus all \
-  -e HF_TOKEN=hf_xxx \
-  -e HF_MODEL_ID=marutishanbhag/code_llama_p_e5 \
-  -p 8000:8000 -p 3000:3000 \
-  your-dockerhub/pega-codellama-serve:latest
+tail -f /tmp/pipeline.log
 ```
 
-### With persistent model cache (skips re-download on restart)
-```bash
-docker run --gpus all \
-  -e HF_TOKEN=hf_xxx \
-  -e HF_MODEL_ID=marutishanbhag/code_llama_p_e5 \
-  -v /mnt/storage/model_cache:/workspace/model \
-  -p 8000:8000 -p 3000:3000 \
-  your-dockerhub/pega-codellama-serve:latest
-```
-
-### Optional env vars
-
-| Env Var | Default | Description |
-|---------|---------|-------------|
-| `VLLM_PORT` | `8000` | vLLM API port |
-| `UI_PORT` | `3000` | Chat UI port |
-| `DTYPE` | `bfloat16` | Model dtype |
-| `MAX_MODEL_LEN` | `4096` | Max context length |
-| `GPU_MEM_UTIL` | `0.90` | vLLM GPU memory utilization |
-| `MODEL_NAME` | `pega-codellama` | Served model name at `/v1/models` |
+Steps it runs automatically:
+1. Clone repo (`feature/codellama` branch)
+2. Install dependencies
+3. Generate training dataset from Java rule files
+4. Train CodeLlama-13B with QLoRA (3 epochs, early stopping)
+5. Merge LoRA adapters into full model
+6. Upload merged model to HuggingFace Hub
+7. Start vLLM + Chat UI
 
 ---
 
-## Endpoints (once running)
+### Option B — Serve Only (already have merged model)
+
+Use this when `/workspace/merged_model` already exists (e.g. after pod restart).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marutishanbhag/pega-mod/feature/codellama/codellama/runpod_setup.sh -o /tmp/runpod_setup.sh && nohup bash /tmp/runpod_setup.sh /workspace/merged_model 8000 3000 > /tmp/setup.log 2>&1 & echo $!
+```
+
+Watch progress:
+```bash
+tail -f /tmp/setup.log
+```
+
+What `runpod_setup.sh` handles automatically:
+- Installs `vllm==0.7.3` and dependencies
+- Fixes `tokenizer_class` → `CodeLlamaTokenizer` (local + HF cache)
+- Fixes `rope_scaling` to include `factor: 1.0` (local + HF cache)
+- Adds `chat_template` if missing
+- Downloads `tokenizer.model` from HF if missing
+- Patches vLLM `tokenizer.py` for `all_special_tokens_extended` error
+- Starts vLLM on port 8000
+- Downloads and starts Chat UI on port 3000
+
+---
+
+## Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
-| `http://<host>:3000` | Gradio chat UI |
+| `http://<host>:3000` | Chat UI |
+| `http://<host>:3000/api/chat` | Chat API (`POST {message, history}`) |
 | `http://<host>:8000/v1/chat/completions` | OpenAI-compatible API |
 | `http://<host>:8000/v1/models` | List loaded models |
 | `http://<host>:3000/health` | Health check |
@@ -93,25 +78,46 @@ docker run --gpus all \
 ## Testing the API
 
 ```bash
-python test_inference.py --base_url http://<host>:8000
-```
+# Check vLLM is up
+curl http://localhost:8000/v1/models
 
-Or with curl:
-```bash
-curl http://<host>:8000/v1/chat/completions \
+# Test inference
+curl -s -X POST http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "pega-codellama",
-    "messages": [{"role": "user", "content": "What does Rule_Obj_CaseType do?"}],
-    "max_tokens": 256
-  }'
+    "messages": [
+      {"role": "system", "content": "You are a Pega code expert fine-tuned on a specific repository of 3,489 Java rule files. These files are Pega-generated Java classes representing Case Types, Flows, Flow Actions, HTML Sections, HTML Harnesses, Activities, Report Definitions, Portal Skins, Data Transforms, and Declare Index rules.\n\nSTRICT RULES:\n1. ONLY reference rule names, class names, methods, and properties you have ACTUALLY seen.\n2. If you are unsure or the question is about something outside your training data, say: \"I don'\''t have that information in my training data.\"\n3. NEVER invent rule names, method names, property names, or class hierarchies.\n4. Explain code in Pega terms (rule type, case type, application namespace).\n5. Provide a confidence score (0-100%) at the end of every response.\n6. If a question is ambiguous, ask for clarification rather than guessing."},
+      {"role": "user", "content": "What namespaces are present in the codebase?"}
+    ],
+    "max_tokens": 300,
+    "temperature": 0.1
+  }' | python3 -m json.tool
+
+# Test via chat UI API
+curl -s -X POST http://localhost:3000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What namespaces are present in the codebase?", "history": []}' \
+  | python3 -m json.tool
 ```
 
 ---
 
-## RunPod Source Pods
+## Restart After Pod Stop/Start
 
-| Epoch | Pod ID | Status |
-|-------|--------|--------|
-| Epoch 3 | `6fa3d018fb39` | Model uploaded to HF, can be stopped |
-| Epoch 5 | `b27b733296c7` | Model uploaded to HF, can be stopped |
+`/workspace` persists across stop/start. Just re-run Option B:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marutishanbhag/pega-mod/feature/codellama/codellama/runpod_setup.sh -o /tmp/runpod_setup.sh && nohup bash /tmp/runpod_setup.sh /workspace/merged_model 8000 3000 > /tmp/setup.log 2>&1 & echo $!
+```
+
+---
+
+## Troubleshooting
+
+See [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) for known issues and fixes.
+
+Key things to remember:
+- Always use the exact system prompt from `prepare_dataset.py` — the model was trained on it
+- vLLM requires `--tokenizer-mode slow` for CodeLlama
+- If GPU OOM after crash: stop/start the pod (GPU reset requires host-level permissions)
