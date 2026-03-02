@@ -1,8 +1,8 @@
 """
 train.py
 
-LoRA fine-tuning of codellama/CodeLlama-13b-Instruct-hf on the Pega Q&A dataset.
-Optimised for large VRAM (200GB+) — full fp16, no quantization.
+LoRA fine-tuning of meta-llama/Llama-3.1-8B-Instruct on the Pega Q&A dataset.
+Optimised for RTX 6000 Ada (48GB) — 4-bit QLoRA by default, fp16 on larger VRAM.
 
 Usage:
     python train.py [--base_model MODEL_ID] [--data_dir ./data] [--output_dir ./output]
@@ -25,7 +25,7 @@ from trl import SFTTrainer, SFTConfig
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 
-DEFAULT_BASE_MODEL = "codellama/CodeLlama-13b-Instruct-hf"
+DEFAULT_BASE_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 SCRIPT_DIR = pathlib.Path(__file__).parent
 
 
@@ -50,13 +50,12 @@ def get_vram_gb() -> float:
     return 0.0
 
 
-# ── LoRA config (CodeLlama target modules) ─────────────────────────────────────
+# ── LoRA config (Llama 3.1 target modules) ────────────────────────────────────
 
 def make_lora_config() -> LoraConfig:
     return LoraConfig(
         r=32,
         lora_alpha=64,
-        # CodeLlama / Llama-2 attention + MLP projection layers
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         lora_dropout=0.10,
         bias="none",
@@ -69,8 +68,7 @@ def make_lora_config() -> LoraConfig:
 def format_chat(example: dict, tokenizer) -> dict:
     """
     Convert a messages list to a single chat string using the model's template.
-    CodeLlama Instruct format:
-        [INST] <<SYS>>\n{system}\n<</SYS>>\n\n{user} [/INST] {assistant}
+    Llama 3.1 Instruct format uses <|begin_of_text|>, <|start_header_id|> tokens.
     """
     text = tokenizer.apply_chat_template(
         example["messages"],

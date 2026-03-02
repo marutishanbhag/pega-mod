@@ -10,6 +10,7 @@ Key improvements over v1 (codellama/prepare_dataset.py):
   6. Validation split carved from held-out files (not random rows)
   7. Token-length guardrails — skip examples that exceed max_seq_length
   8. Stats report at the end
+  9. Business docs Q&A — docs/*.md files generate business-context pairs
 
 Usage:
     python codellama/v2/prepare_dataset_v2.py [--max_seq_length 2048] [--neg_ratio 0.20]
@@ -26,7 +27,8 @@ from collections import Counter
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR = pathlib.Path(__file__).parent
-REPO_ROOT = SCRIPT_DIR.parent.parent          # pega-mod/
+REPO_ROOT = SCRIPT_DIR.parent                 # pega-mod/
+DOCS_DIR = REPO_ROOT / "docs"
 OUTPUT_DIR = SCRIPT_DIR / "data"
 
 # ── System prompt (tightened for anti-hallucination) ──────────────────────────
@@ -154,6 +156,16 @@ def extract_work_object(class_name: str | None) -> str | None:
     return None
 
 
+def strip_copyright_header(source: str) -> str:
+    """Remove the Pegasystems copyright block comment from source."""
+    return re.sub(
+        r'/\*\s*\n(?:\s*\*[^\n]*\n)+\s*\*/',
+        '',
+        source,
+        count=1,
+    ).lstrip()
+
+
 def meaningful_snippet(lines: list[str], max_lines: int) -> str:
     in_comment = False
     body = []
@@ -239,6 +251,11 @@ def generate_qa_pairs(
     class_name: str | None, base_class: str | None,
     ruleset_name: str | None, snippet: str, source: str,
 ) -> list[dict]:
+    # Skip files with unidentifiable rule type or namespace — "Unknown" answers
+    # pollute the model and cause false negatives during inference.
+    if rule_type == "Unknown" or namespace == "Unknown":
+        return []
+
     pairs = []
     rt_desc = RULE_TYPE_DESCRIPTIONS.get(rule_type, f"a Pega rule of type {rule_type}")
     ns_label = NAMESPACE_MAP.get(namespace, namespace)
@@ -428,9 +445,17 @@ def make_raw_file_example(path: pathlib.Path) -> dict | None:
     except Exception:
         return None
 
+    source = strip_copyright_header(source)
+
     filename = path.name
     rule_type = detect_rule_type(filename)
     namespace = detect_namespace(filename)
+
+    # Skip files with unidentifiable rule type or namespace — teaching "Unknown"
+    # pollutes the model and causes false negatives during inference.
+    if rule_type == "Unknown" or namespace == "Unknown":
+        return None
+
     ns_label = NAMESPACE_MAP.get(namespace, namespace)
     rt_desc = RULE_TYPE_DESCRIPTIONS.get(rule_type, f"a Pega rule of type {rule_type}")
 
@@ -495,11 +520,11 @@ def make_negative_examples(known_files: list[str], known_ns: list[str]) -> list[
 
     for fake in fake_rules:
         # Ask what it does
-        negs.append(msg(f"What does the rule `{fake}` do?", IDK, weight=2.0))
+        negs.append(msg(f"What does the rule `{fake}` do?", IDK, weight=1.0))
         # Ask for source
-        negs.append(msg(f"Show me the source code for `{fake}`.", IDK, weight=2.0))
+        negs.append(msg(f"Show me the source code for `{fake}`.", IDK, weight=1.0))
         # Ask about methods in it
-        negs.append(msg(f"What methods does `{fake}` define?", IDK, weight=1.5))
+        negs.append(msg(f"What methods does `{fake}` define?", IDK, weight=1.0))
 
     # ── 2. Fake namespace questions ──────────────────────────────────────────
     fake_ns = [
@@ -513,13 +538,13 @@ def make_negative_examples(known_files: list[str], known_ns: list[str]) -> list[
             f"I don't have any rules from the `{ns}` namespace in my training data. "
             f"The namespaces I know are: {ns_list_str}. I cannot provide information "
             f"about namespaces outside this set.\n\nConfidence: 95%",
-            weight=2.0,
+            weight=1.0,
         ))
         negs.append(msg(
             f"Tell me about the `{ns}` application.",
             f"The `{ns}` application is not in my training data. "
             f"I was trained on: {ns_list_str}.\n\nConfidence: 95%",
-            weight=1.5,
+            weight=1.0,
         ))
 
     # ── 3. Fake method/property questions ────────────────────────────────────
@@ -558,7 +583,7 @@ def make_negative_examples(known_files: list[str], known_ns: list[str]) -> list[
          "but no Decision Tree rules.\n\nConfidence: 90%"),
     ]
     for q, a in fake_method_qs:
-        negs.append(msg(q, a, weight=2.0))
+        negs.append(msg(q, a, weight=1.0))
 
     # ── 4. Cross-namespace confusion (model should not mix up namespaces) ────
     cross_ns_qs = [
@@ -581,7 +606,7 @@ def make_negative_examples(known_files: list[str], known_ns: list[str]) -> list[
          "They share the Work-Enrollment class.\n\nConfidence: 85%"),
     ]
     for q, a in cross_ns_qs:
-        negs.append(msg(q, a, weight=2.5))
+        negs.append(msg(q, a, weight=1.5))
 
     # ── 5. General out-of-scope questions ────────────────────────────────────
     oos_qs = [
@@ -602,9 +627,254 @@ def make_negative_examples(known_files: list[str], known_ns: list[str]) -> list[
          "I was trained on a specific set of Java rule files from this repository.\n\nConfidence: 60%"),
     ]
     for q, a in oos_qs:
-        negs.append(msg(q, a, weight=1.5))
+        negs.append(msg(q, a, weight=1.0))
 
     return negs
+
+
+# ── Business documentation Q&A ───────────────────────────────────────────────
+
+# Mapping from doc filename → list of (question, answer) tuples.
+# We also auto-generate Q&A by extracting sections from each markdown file.
+
+_DOCS_STATIC_QA: list[tuple[str, str]] = [
+    # BUSINESS_EPIC.md
+    (
+        "What is the high-level business goal of this Pega migration project?",
+        "The initiative rewrites Pega-based case management interfaces and Java artifacts into "
+        "a React frontend + Spring Boot backend + Postgres + Redis stack. Goals: 50% faster "
+        "time-to-market for feature changes, enhanced operational visibility (Prometheus/Grafana), "
+        "lower operational cost via containerised deployment, improved UX/mobile support, and "
+        "better version-control transparency of business logic.\n\nConfidence: 95%"
+    ),
+    (
+        "What are the in-scope case types for the Pega migration?",
+        "In-scope: Enrollment (LTM), Onboarding variants (OLFHF9, LTM, ProcessO), and Loan. "
+        "Workflows include CreateForm_Default, Stage flows, Resolution, and CollectInformation. "
+        "Flow actions, validation rules, audit logging, RBAC, SLA management, and geo/search "
+        "integrations are also in scope.\n\nConfidence: 95%"
+    ),
+    (
+        "What are the main risks in migrating from Pega?",
+        "Key risks: (1) Complexity transferring Pega artifacts to a relational data model. "
+        "(2) Semantic differences between implicit Pega constructs and explicit code. "
+        "(3) Ensuring geo/search performance parity (PostGIS). "
+        "(4) Stakeholder buy-in on UI/UX equivalence. "
+        "Mitigations: run both systems concurrently (canary), document entity mappings, "
+        "automated reconciliation.\n\nConfidence: 95%"
+    ),
+    # BUSINESS_STORIES.md
+    (
+        "What are the P0 (must-have MVP) user stories for this migration?",
+        "P0 stories: (1) Customer creates Onboarding case via multi-step wizard. "
+        "(2) Case Worker sees prioritised, pageable case list with SLA coloring. "
+        "(3) Case Worker views full case detail (header, sections, attachments, history). "
+        "(4) Client-side phone/email validation prevents submission errors. "
+        "(5) JWT-based auth with role checks (returns 403 when unauthorised).\n\nConfidence: 95%"
+    ),
+    (
+        "How does the new system support geo-filtering of cases?",
+        "Story 5 (P1): Product Owner wants faceted search with proximity filtering "
+        "(km-radius). The backend uses PostGIS geo-spatial indexes on stored lat/lon "
+        "coordinates. Addresses are validated and geocoded on submission; "
+        "proximity queries use `ST_DWithin` or equivalent PostGIS function.\n\nConfidence: 90%"
+    ),
+    # CASE_TYPE_DIFFERENCES.md
+    (
+        "How do LTM BFS and LTM Enrollment differ?",
+        "They are virtual duplicates (~99% identical). Both share the Work-Enrollment class "
+        "and the same CaseType, Flow, Report Definition, and UI rules. LTM_BFS is the base "
+        "framework layer; LTM_Enrollment is the derived application. "
+        "The analysis recommends consolidating them.\n\nConfidence: 90%"
+    ),
+    (
+        "What makes OFON2J ProcessO unique compared to other onboarding case types?",
+        "ProcessO has a 3-stage workflow (PRIM0 → PRIM1 → PRIM2) instead of single-stage; "
+        "it uniquely supports geographic/location indexing (HomeAddress geo-coordinates); "
+        "and it has a dedicated CollectInformation FlowAction. Other onboarding variants "
+        "use a simpler CreateForm → Stage1 → Resolution pattern.\n\nConfidence: 90%"
+    ),
+    (
+        "What is different about OnboaringProcess compared to Onboarding?",
+        "OnboaringProcess (OLFHF9) sets `mTraceInfo = null` unlike other case types, "
+        "suggesting distinct logging/tracing. It emphasises performance metrics and "
+        "process tracking (taskCount, tasksCompleted) rather than standard event capture. "
+        "It is a sub-process case within the OLFHF9 application.\n\nConfidence: 85%"
+    ),
+    # CORE_BUSINESS_FUNCTIONS.md
+    (
+        "What is the case lifecycle for all case types?",
+        "Standard transitions: CREATE → INITIALIZATION → ASSIGN → IN_PROGRESS → COMPLETE → CLOSED. "
+        "No shortcuts — all stages are required. Each transition logs old/new state, reason, and "
+        "timestamp. SLA: 15 business days for standard enrollment; overdue cases escalate to "
+        "manager after 5 days.\n\nConfidence: 95%"
+    ),
+    (
+        "What validation rules must be ported from Pega?",
+        "Key validators: (1) Phone — international `+1-999-999-9999` or domestic `999-999-9999`. "
+        "(2) Email — RFC 5322 format. (3) Country — ISO 3166-1 alpha-2. "
+        "(4) Value range — `ra_validate_casematch_value0to100_*`. "
+        "(5) Required field — non-null and non-empty. "
+        "(6) Address — format + geocoding. (7) Duplicate check by email/phone. "
+        "Port to JSR-380 server-side + HTML5 client-side validators.\n\nConfidence: 95%"
+    ),
+    (
+        "What RBAC roles exist in this system and what can they do?",
+        "Four roles: Admin (full access), Manager (approve transitions, view all-team reports), "
+        "CaseWorker (process assigned cases), Customer (create/view own cases). "
+        "Managers and Admins can approve final stage; CaseWorkers cannot. "
+        "Only Admins can delete. Enforced via JWT and When-condition privilege checks "
+        "like `pzCanmodifyApplication` and `checkInstanceAccess()`.\n\nConfidence: 95%"
+    ),
+    (
+        "What are the Tier 1 MVP functions to rebuild from Pega?",
+        "Tier 1: Case CRUD, paginated/filterable case list, full case detail with edit, "
+        "multi-step create wizard, phone/email/required-field validation, "
+        "case status transitions, and JWT-based auth + RBAC.\n\nConfidence: 95%"
+    ),
+    (
+        "What technology stack is recommended for rebuilding this system?",
+        "Backend: Spring Boot 3.x with Postgres + PostGIS (geo queries) and Redis (caching). "
+        "Frontend: React + TypeScript. API: REST + OpenAPI. Auth: JWT (OAuth2 optional). "
+        "Validation: JSR-380 server + HTML5 client. Async: Spring @Async for notifications/reports. "
+        "Audit: JPA entity listeners.\n\nConfidence: 95%"
+    ),
+    # DOMAIN_MODEL_MAPPING.md
+    (
+        "How does the Pega Case entity map to a Spring Boot JPA entity?",
+        "The base `Case` entity uses `@Inheritance(JOINED)` with a `case_type` discriminator. "
+        "Key fields: `id` (UUID PK), `pyID` (unique String), `pyStatusWork` (Enum: CREATE/INITIALIZATION/"
+        "ASSIGN/IN_PROGRESS/COMPLETE/CLOSED), `pxCreateDateTime` (immutable LocalDateTime), "
+        "`pxCreateOpName` (creator), `pyLabel`, `pyDescription`, `customProperties` (Map), "
+        "`transitions` (audit trail), `attachments`, `updatedAt`, `closedAt`.\n\nConfidence: 95%"
+    ),
+    (
+        "How is the HomeAddress complex type stored in the new system?",
+        "HomeAddress is an `@Embeddable` Spring entity with: street, city, stateProvince, "
+        "postalCode, country (ISO-2), latitude, longitude (Double), accuracy Enum "
+        "(ROOFTOP/RANGE_INTERPOLATED/GEOMETRIC_CENTER/APPROXIMATE), and lastValidated. "
+        "In Postgres, a PostGIS `geography(POINT, 4326)` column is added for geo queries, "
+        "indexed with `CREATE INDEX ... USING GIST`.\n\nConfidence: 95%"
+    ),
+    (
+        "What Spring entity represents the ProcessO case type?",
+        "ProcessOOnboardingCase extends Case with discriminator `ONBOARDING_PROCESSO`. "
+        "It adds: firstName, lastName, emailAddress, phone, country, `@Embedded homeAddress`, "
+        "`currentStage` (Enum: PRIM0_COLLECTION/PRIM1_VALIDATION/PRIM2_CONFIRMATION/RESOLUTION), "
+        "`stageRetryCount`, and a `@OneToMany` list of `ValidationCheckpoint` entities "
+        "(each with checkpointName, status, checkpointDate, checkpointDetails).\n\nConfidence: 95%"
+    ),
+    (
+        "How is the Loan case type modelled in Spring Boot?",
+        "LoanCase extends Case with discriminator `LOAN`. Extra fields: applicantFirstName, "
+        "applicantLastName, applicantEmail, applicantPhone, `currentStage` (Enum: APPLICATION → "
+        "INTAKE → UNDERWRITING → APPRAISAL → FUNDING → DISBURSEMENT → CLOSED), loanAmount "
+        "(BigDecimal), approvedAmount, loanStatus (APPLIED/APPROVED/REJECTED/FUNDED/CLOSED), "
+        "interestRate (Double), loanTermMonths (Integer), disbursementDate (LocalDate).\n\nConfidence: 95%"
+    ),
+    (
+        "What database indexes are needed for this system?",
+        "Key indexes: pyID (unique lookup), pyStatusWork, pxCreateDateTime; email/phone/firstName "
+        "(filtered to ONBOARDING rows); GIST spatial index on `home_address_geom` (PostGIS); "
+        "GIN index on `custom_properties` JSONB; transition case_id and time indexes for audit "
+        "trail queries; SLA due-time index for overdue detection.\n\nConfidence: 90%"
+    ),
+    # REQUIREMENTS.md / DESIGN.md (already in repo, add a couple cross-links)
+    (
+        "What is the API contract for creating an Onboarding case?",
+        "POST /api/cases/create — request body includes caseType (`OLFHF9-Onboarding`), "
+        "firstName, lastName, emailAddress, phone (validated format), country (ISO-2), "
+        "and optional homeAddress (street, city, state, postalCode). "
+        "Response 201: { status: SUCCESS, caseId: 'OLFHF9-ONBOARDING-2026-001234', "
+        "message: 'Case created successfully', nextStep: 'CollectInformation' }.\n\nConfidence: 90%"
+    ),
+    # corepegafilessummary.md
+    (
+        "What are the high-value migration targets in the Pega generated code?",
+        "Priority targets: (1) `casetype/ra_action_pydefault_*` — implement base Case entity "
+        "initialization. (2) `flow/createform_default` and `flow/collectinformation` — REST endpoints "
+        "+ workflow service. (3) Validation rules — port to JSR-380 + React. "
+        "(4) `Rule_Declare_Index` / address indexing — Postgres/PostGIS schema. "
+        "(5) HTML harness & stream handlers — map to React components (list/detail/create-wizard)."
+        "\n\nConfidence: 95%"
+    ),
+    (
+        "What types of Pega rule files are in the generated Java code?",
+        "Rule categories in `com/pegarules/generated`: casetype (case initialization), "
+        "flow (workflow orchestration), flowaction (interactive steps), model (data transforms), "
+        "validate (phone/email/URI/range validators), html_harness (portal entry points), "
+        "html_section (reusable UI panels), stream handlers (sh_stream_*), when/decision "
+        "conditions, portalskin (theming), automation/onchange handlers.\n\nConfidence: 95%"
+    ),
+    (
+        "What MVP approach is recommended for the migration?",
+        "Start with one case type end-to-end: OLFHF9 Onboarding as the MVP. Implement "
+        "API (Spring Boot), DB model (Postgres + PostGIS for geo), UI (React), validation, "
+        "and geo-indexing. Then produce an OpenAPI skeleton and a small Spring Boot + React PoC. "
+        "Run both systems concurrently during canary phase.\n\nConfidence: 90%"
+    ),
+]
+
+
+def make_docs_qa() -> list[dict]:
+    """
+    Generate training examples from business documentation in docs/.
+    Two sources:
+      1. Static curated Q&A pairs defined above.
+      2. Auto-extracted section headers + bodies from markdown files.
+    """
+    pairs = []
+
+    # ── 1. Static curated Q&A ────────────────────────────────────────────────
+    for q, a in _DOCS_STATIC_QA:
+        pairs.append(msg(q, a, weight=1.0))
+
+    # ── 2. Auto-extract sections from markdown docs ──────────────────────────
+    if not DOCS_DIR.exists():
+        return pairs
+
+    # Only include docs that contain substantial business content (skip JSON/CSV)
+    doc_files = [
+        f for f in sorted(DOCS_DIR.glob("*.md"))
+        if f.stat().st_size < 200_000  # skip extremely large files
+    ]
+
+    for doc_path in doc_files:
+        try:
+            text = doc_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+        # Split on ## or ### headings
+        sections = re.split(r'\n(?=#{2,3} )', text)
+        for section in sections:
+            lines = section.strip().splitlines()
+            if not lines:
+                continue
+            heading_line = lines[0].strip()
+            # Must be a real heading
+            if not heading_line.startswith("##"):
+                continue
+            heading = re.sub(r'^#+\s*', '', heading_line).strip()
+            body_lines = [l for l in lines[1:] if l.strip()]
+            if len(body_lines) < 3:
+                continue
+
+            # Use first 30 lines of body as context
+            body = "\n".join(body_lines[:30]).strip()
+            if len(body) < 80:
+                continue
+
+            q = f"In the context of the Pega migration project, what does the section '{heading}' cover?"
+            a = (
+                f"From `{doc_path.name}`, section **{heading}**:\n\n"
+                + body[:800]
+                + ("\n\n..." if len(body) > 800 else "")
+                + "\n\nConfidence: 85%"
+            )
+            pairs.append(msg(q, a, weight=1.0))
+
+    return pairs
 
 
 # ── Application-level Q&A ────────────────────────────────────────────────────
@@ -711,6 +981,8 @@ def process_file(path: pathlib.Path) -> list[dict]:
         print(f"  [WARN] could not read {filename}: {e}")
         return []
 
+    source = strip_copyright_header(source)
+
     lines = source.splitlines()
     rule_type = detect_rule_type(filename)
     namespace = detect_namespace(filename)
@@ -805,6 +1077,11 @@ def main():
     all_pairs.extend(app_qa)
     print(f"  + {len(app_qa)} app-level Q&A pairs")
 
+    # ── Business docs Q&A ─────────────────────────────────────────────────────
+    docs_qa = make_docs_qa()
+    all_pairs.extend(docs_qa)
+    print(f"  + {len(docs_qa)} business docs Q&A pairs")
+
     # ── Negative examples ────────────────────────────────────────────────────
     negatives = make_negative_examples(
         known_files=[f.stem for f in qa_files],
@@ -828,11 +1105,20 @@ def main():
     before = len(weighted_pairs)
     weighted_pairs = [
         p for p in weighted_pairs
-        if approx_tokens(json.dumps(p)) <= args.max_seq_length * 4
+        if approx_tokens(json.dumps(p)) <= args.max_seq_length
     ]
     dropped = before - len(weighted_pairs)
     if dropped:
-        print(f"  Dropped {dropped} examples exceeding ~{args.max_seq_length} tokens")
+        print(f"  Dropped {dropped} train examples exceeding ~{args.max_seq_length} tokens")
+
+    val_before = len(val_pairs)
+    val_pairs = [
+        p for p in val_pairs
+        if approx_tokens(json.dumps(p)) <= args.max_seq_length
+    ]
+    val_dropped = val_before - len(val_pairs)
+    if val_dropped:
+        print(f"  Dropped {val_dropped} validation examples exceeding ~{args.max_seq_length} tokens")
 
     # ── Shuffle and write ────────────────────────────────────────────────────
     random.shuffle(weighted_pairs)
@@ -848,11 +1134,17 @@ def main():
                 f.write(json.dumps(item) + "\n")
 
     # ── Stats ────────────────────────────────────────────────────────────────
-    neg_count = len([p for p in weighted_pairs if "I don't have" in p["messages"][2]["content"][:50]])
+    _neg_prefixes = ("I don't have", "No.", "I don't see", "There is no",
+                     "I cannot determine", "Deployment procedures",
+                     "I can describe", "Pega PRPC")
+    neg_count = len([
+        p for p in weighted_pairs
+        if p["messages"][2]["content"].strip().startswith(_neg_prefixes)
+    ])
     neg_pct = neg_count / len(weighted_pairs) * 100 if weighted_pairs else 0
 
     print(f"\n{'=' * 60}")
-    print(f"  DATASET STATISTICS (v2)")
+    print(f"  DATASET STATISTICS (v3)")
     print(f"{'=' * 60}")
     print(f"  Train examples:     {len(weighted_pairs)}")
     print(f"  Validation examples: {len(val_pairs)}")

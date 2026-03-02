@@ -1,12 +1,13 @@
-# Pega CodeLlama — Deployment Guide
+# Pega Llama-3.1-8B — Deployment Guide
 
 ## Current Model (HuggingFace Hub)
 
 | Model | HuggingFace Repo | Notes |
 |-------|-----------------|-------|
-| v2 (latest) | [marutishanbhag/pega-codellama-13b-v2](https://huggingface.co/marutishanbhag/pega-codellama-13b-v2) | Best checkpoint (early stopping), anti-hallucination training |
+| v3 (latest) | [marutishanbhag/pega-llama31-8b-v1](https://huggingface.co/marutishanbhag/pega-llama31-8b-v1) | Llama-3.1-8B-Instruct, anti-hallucination training |
+| v2 (archived) | [marutishanbhag/pega-codellama-13b-v2](https://huggingface.co/marutishanbhag/pega-codellama-13b-v2) | Previous CodeLlama-13B model |
 
-Merged CodeLlama-13B-Instruct model (bfloat16, ~25GB), ready for vLLM.
+Merged Llama-3.1-8B-Instruct model (bfloat16, ~16GB), ready for vLLM.
 
 ---
 
@@ -53,12 +54,8 @@ tail -f /tmp/setup.log
 
 What `runpod_setup.sh` handles automatically:
 - Installs `vllm==0.7.3` and dependencies
-- Fixes `tokenizer_class` → `CodeLlamaTokenizer` (local + HF cache)
-- Fixes `rope_scaling` to include `factor: 1.0` (local + HF cache)
-- Adds `chat_template` if missing
-- Downloads `tokenizer.model` from HF if missing
-- Patches vLLM `tokenizer.py` for `all_special_tokens_extended` error
-- Starts vLLM on port 8000
+- Verifies model config
+- Starts vLLM on port 8000 (no tokenizer patches needed for Llama 3.1)
 - Downloads and starts Chat UI on port 3000
 
 ---
@@ -85,7 +82,7 @@ curl http://localhost:8000/v1/models
 curl -s -X POST http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "pega-codellama",
+    "model": "pega-llama31",
     "messages": [
       {"role": "system", "content": "You are a Pega code expert fine-tuned on a specific repository of 3,489 Java rule files. These files are Pega-generated Java classes representing Case Types, Flows, Flow Actions, HTML Sections, HTML Harnesses, Activities, Report Definitions, Portal Skins, Data Transforms, and Declare Index rules.\n\nSTRICT RULES:\n1. ONLY reference rule names, class names, methods, and properties you have ACTUALLY seen.\n2. If you are unsure or the question is about something outside your training data, say: \"I don'\''t have that information in my training data.\"\n3. NEVER invent rule names, method names, property names, or class hierarchies.\n4. Explain code in Pega terms (rule type, case type, application namespace).\n5. Provide a confidence score (0-100%) at the end of every response.\n6. If a question is ambiguous, ask for clarification rather than guessing."},
       {"role": "user", "content": "What namespaces are present in the codebase?"}
@@ -119,5 +116,6 @@ See [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) for known issues and fixes.
 
 Key things to remember:
 - Always use the exact system prompt from `prepare_dataset.py` — the model was trained on it
-- vLLM requires `--tokenizer-mode slow` for CodeLlama
+- Llama 3.1 does NOT need `--tokenizer-mode slow` (that was CodeLlama-specific)
+- Stop tokens for Llama 3.1: `<|eot_id|>`, `<|end_of_text|>`
 - If GPU OOM after crash: stop/start the pod (GPU reset requires host-level permissions)

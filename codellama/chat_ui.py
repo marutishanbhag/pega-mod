@@ -43,7 +43,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--vllm_url", default="http://localhost:8000")
     p.add_argument("--port", type=int, default=3000)
-    p.add_argument("--model", default="pega-phi3-mini")
+    p.add_argument("--model", default="pega-llama31")
     return p.parse_args()
 
 
@@ -85,7 +85,7 @@ async def chat(request: Request):
         "max_tokens": 512,
         "temperature": 0.1,
         "repetition_penalty": 1.15,
-        "stop": ["</s>", "[INST]", "<<SYS>>"],
+        "stop": ["<|eot_id|>", "<|end_of_text|>"],
     }
 
     try:

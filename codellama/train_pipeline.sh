@@ -2,7 +2,7 @@
 # =============================================================================
 # train_pipeline.sh
 #
-# End-to-end training pipeline for Pega CodeLlama fine-tune on RunPod.
+# End-to-end training pipeline for Pega Llama-3.1-8B fine-tune on RunPod.
 # Automatically runs inside a tmux session so terminal disconnects are safe.
 #
 # Usage:
@@ -10,7 +10,7 @@
 #
 # Or set env vars before running:
 #   export HF_TOKEN=hf_xxx
-#   export HF_REPO=marutishanbhag/pega-codellama-13b-v2
+#   export HF_REPO=marutishanbhag/pega-llama31-8b-v1
 #   bash train_pipeline.sh
 #
 # If terminal disconnects, reattach with:
@@ -20,7 +20,7 @@
 #   1. Clone repo and checkout feature/codellama
 #   2. Install dependencies
 #   3. Generate training dataset
-#   4. Train CodeLlama-13B with LoRA (3 epochs, 4-bit QLoRA)
+#   4. Train Llama-3.1-8B-Instruct with LoRA (3 epochs, 4-bit QLoRA)
 #   5. Merge LoRA adapters into full model
 #   6. Upload merged model to HuggingFace Hub
 #   7. Start vLLM + Chat UI
@@ -55,7 +55,7 @@ HF_TOKEN="${1:-$HF_TOKEN}"
 HF_REPO="${2:-$HF_REPO}"
 
 echo "=============================================="
-echo "  Pega CodeLlama — Training Pipeline"
+echo "  Pega Llama-3.1-8B — Training Pipeline"
 echo "  Branch  : $BRANCH"
 echo "  Output  : $OUTPUT_DIR"
 echo "  Merged  : $MERGED_DIR"
@@ -201,7 +201,7 @@ PYEOF
 # ── [4/7] Train ───────────────────────────────────────────────────────────────
 echo ""
 echo "[4/7] Starting training (3 epochs, 4-bit QLoRA)..."
-echo "  This will take ~2-3 hours on RTX 6000 Ada."
+echo "  This will take ~1-2 hours on RTX 6000 Ada (8B is faster than 13B)."
 echo ""
 
 python train.py \
@@ -254,7 +254,7 @@ print('  Upload complete.')
 "
 
     # ── Upload training dataset to HF Hub ─────────────────────────────────────
-    HF_DATASET_REPO="${HF_DATASET_REPO:-marutishanbhag/pega-codellama-13b-v2}"
+    HF_DATASET_REPO="${HF_DATASET_REPO:-marutishanbhag/pega-llama31-8b-v1}"
     echo ""
     echo "  Uploading training dataset to $HF_DATASET_REPO ..."
     python3 - <<PYEOF

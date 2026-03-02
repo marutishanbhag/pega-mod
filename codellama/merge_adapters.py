@@ -1,12 +1,12 @@
 """
 merge_adapters.py
 
-Merge LoRA adapters into the base Phi-3 model to produce a standalone
-full-precision model that vLLM can serve directly.
+Merge LoRA adapters into the base Llama-3.1-8B-Instruct model to produce
+a standalone full-precision model that vLLM can serve directly.
 
 Usage:
     python merge_adapters.py \
-        [--base_model microsoft/Phi-3-mini-4k-instruct] \
+        [--base_model meta-llama/Llama-3.1-8B-Instruct] \
         [--adapter_path ./output/final_adapter] \
         [--output_dir ./merged_model]
 """
@@ -25,7 +25,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument(
         "--base_model",
-        default="codellama/CodeLlama-13b-Instruct-hf",
+        default="meta-llama/Llama-3.1-8B-Instruct",
         help="Base model ID or local path (loaded in fp16, no quantization)",
     )
     p.add_argument(
@@ -80,16 +80,6 @@ def main():
     print(f"\nSaving merged model to {args.output_dir} ...")
     model.save_pretrained(args.output_dir, safe_serialization=True)
     tokenizer.save_pretrained(args.output_dir)
-
-    # ── Fix tokenizer_config.json (PEFT sometimes writes 'TokenizersBackend') ──
-    import json
-    tok_cfg_path = pathlib.Path(args.output_dir) / "tokenizer_config.json"
-    if tok_cfg_path.exists():
-        tok_cfg = json.loads(tok_cfg_path.read_text())
-        if tok_cfg.get("tokenizer_class") != "CodeLlamaTokenizer":
-            tok_cfg["tokenizer_class"] = "CodeLlamaTokenizer"
-            tok_cfg_path.write_text(json.dumps(tok_cfg, indent=2))
-            print("  Fixed tokenizer_class -> CodeLlamaTokenizer")
 
     print("\nMerge complete.")
     print(f"  Merged model saved to: {args.output_dir}")
