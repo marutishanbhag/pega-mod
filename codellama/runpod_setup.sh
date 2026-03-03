@@ -16,7 +16,7 @@ MODEL_PATH="${1:-/workspace/merged_model}"
 VLLM_PORT="${2:-8000}"
 UI_PORT="${3:-3000}"
 SCRIPTS_DIR="/workspace/scripts"
-GITHUB_RAW="https://raw.githubusercontent.com/marutishanbhag/pega-mod/feature/codellama/codellama"
+GITHUB_RAW="https://raw.githubusercontent.com/marutishanbhag/pega-mod/feature/start_small/codellama"
 
 echo "=============================================="
 echo "  Pega Llama-3.1-8B — vLLM + Chat UI"
